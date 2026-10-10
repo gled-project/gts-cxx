@@ -1,0 +1,960 @@
+// Unit tests of the core: Geometrium, surfaces, rings, collection,
+// attributes, renumbering callouts, statistics and .gts input and output;
+// default hooks, split, collapse and swap primitives and their events; the edge
+// heap, tessellation, refinement, spheres, coarsening, iso-surfaces,
+// predicates, bounding-box trees, booleans and the cluster grid; distances,
+// the inside test, curvature, the kd-tree and merging.
+//
+// Copyright (C) 2026 Matevz Tadel
+// SPDX-License-Identifier: LGPL-2.1-or-later
+
+#include "gts/all.h"
+
+#include <atomic>
+#include <algorithm>
+#include <cmath>
+#include <numbers>
+#include <print>
+#include <sstream>
+#include <string>
+#include <thread>
+
+using namespace gts;
+
+// A type with its own default hooks: interpolation takes the nearer source.
+struct Label { int id = 0; };
+template <> struct gts::DefaultHooks<Label> : gts::GenericHooks<Label>
+{
+  static Label interpolate(const Label& a, const Label& b, double t) { return t < 0.5 ? a : b; }
+};
+
+static std::atomic<int> g_failed = 0;
+#define CHECK(c) do { if ( ! (c)) { std::println("FAIL {}:{}: {}", __FILE__, __LINE__, #c); ++g_failed; } } while (0)
+
+template <class R> static std::size_t count(R&& r) { std::size_t n = 0; for (auto x : r) { (void) x; ++n; } return n; }
+
+struct Tet { std::array<VertexId, 4> v; std::array<EdgeId, 6> e; std::array<FaceId, 4> f; };
+
+// A tetrahedron with its faces oriented outwards. Edges: 01 02 03 12 13 23.
+static Tet tetrahedron(Geometrium& g, Surface& s, Vec3 o = {})
+{
+  Tet t;
+  t.v = { g.add_vertex(o), g.add_vertex(o + Vec3{1, 0, 0}), g.add_vertex(o + Vec3{0, 1, 0}), g.add_vertex(o + Vec3{0, 0, 1}) };
+  t.e = { g.add_edge(t.v[0], t.v[1]), g.add_edge(t.v[0], t.v[2]), g.add_edge(t.v[0], t.v[3]),
+          g.add_edge(t.v[1], t.v[2]), g.add_edge(t.v[1], t.v[3]), g.add_edge(t.v[2], t.v[3]) };
+  // Bottom 0-2-1, front 0-1-3, left 0-3-2, slanted 1-2-3, all seen from outside.
+  t.f = { g.add_face(t.e[1], t.e[3], t.e[0]), g.add_face(t.e[0], t.e[4], t.e[2]),
+          g.add_face(t.e[2], t.e[5], t.e[1]), g.add_face(t.e[3], t.e[5], t.e[4]) };
+  for (FaceId f : t.f) s.add_face(f);
+  return t;
+}
+
+static void test_build_and_rings()
+{
+  Geometrium g;
+  Surface& s = g.new_surface("tet");
+  Tet t = tetrahedron(g, s);
+  CHECK(s.vertex_number() == 4 && s.edge_number() == 6 && s.face_number() == 4);
+  for (VertexId v : t.v) CHECK(count(g.edges_of(v)) == 3);
+  for (EdgeId e : t.e)   CHECK(count(g.faces_of(e)) == 2);
+  CHECK(is_closed(s) && is_manifold(s) && is_orientable(s));
+  CHECK(std::abs(area(s) - (1.5 + std::sqrt(3.0) / 2)) < 1e-12);
+  CHECK(std::abs(volume(s) - 1.0 / 6) < 1e-15);
+  CHECK(g.find_edge(t.v[0], t.v[3]) == t.e[2] && ! g.find_edge(t.v[0], t.v[0]).valid());
+}
+
+static void test_orientation()
+{
+  // gts_triangle_vertices: the four ways the first two edges can share a vertex.
+  Geometrium g;
+  VertexId a = g.add_vertex({0, 0, 0}), b = g.add_vertex({1, 0, 0}), c = g.add_vertex({0, 1, 0});
+  EdgeId ab = g.add_edge(a, b), ba = g.add_edge(b, a), bc = g.add_edge(b, c), cb = g.add_edge(c, b);
+  EdgeId ca = g.add_edge(c, a);
+  using V3 = std::array<VertexId, 3>;
+  CHECK(g.vertices_of(g.add_face(ab, bc, ca)) == (V3{ a, b, c })); // e1.v2 == e2.v1
+  CHECK(g.vertices_of(g.add_face(ab, cb, ca)) == (V3{ a, b, c })); // e1.v2 == e2.v2
+  CHECK(g.vertices_of(g.add_face(ba, ab == ab ? g.add_edge(b, c) : bc, ca)) == (V3{ a, b, c })); // e1.v1 == e2.v1
+  CHECK(g.vertices_of(g.add_face(ba, cb, ca)) == (V3{ a, b, c })); // e1.v1 == e2.v2... b is e1.v1 and e2.v2
+  // Counter-clockwise seen from +z: the normal points to +z.
+  const Vec3 n = g.normal(g.add_face(ab, bc, ca));
+  CHECK(n.z > 0 && n.x == 0 && n.y == 0);
+}
+
+static void test_release_cascade()
+{
+  // A face leaving its last surface is unlinked at once, with its orphans.
+  Geometrium g;
+  Surface& s = g.new_surface();
+  Tet t = tetrahedron(g, s);
+  s.remove_face(t.f[0]);
+  CHECK(g.dead(t.f[0]) && ! g.dead(t.e[0]) && count(g.faces_of(t.e[0])) == 1);
+  s.remove_face(t.f[1]);                // edge 01 loses its last face
+  CHECK(g.dead(t.e[0]) && count(g.edges_of(t.v[0])) == 2);
+  CHECK( ! g.dead(t.v[0]) && ! g.dead(t.v[1]));
+  s.remove_face(t.f[2]);
+  s.remove_face(t.f[3]);                // everything goes
+  CHECK(g.dead(t.v[0]) && g.dead(t.v[3]));
+  g.collect();
+  CHECK(g.vertex_capacity() == 0 && g.edge_capacity() == 0 && g.face_capacity() == 0);
+}
+
+static void test_keep_orphans()
+{
+  Geometrium g;
+  Surface& s = g.new_surface();
+  Tet t = tetrahedron(g, s);
+  {
+    KeepOrphans keep(g, { .edges = true });
+    s.remove_face(t.f[0]);
+    s.remove_face(t.f[1]);
+  }
+  CHECK(g.dead(t.f[0]) && ! g.dead(t.e[0]) && count(g.faces_of(t.e[0])) == 0);
+  g.collect({ .edges = false });        // keep the faceless edge
+  CHECK(g.face_capacity() == 2 && g.edge_capacity() == 6);
+  g.collect();
+  CHECK(g.edge_capacity() == 5);
+}
+
+static void test_shared_faces()
+{
+  Geometrium g;
+  Surface& s1 = g.new_surface("one");
+  Surface& s2 = g.new_surface("two");
+  Tet t = tetrahedron(g, s1);
+  s2.add_face(t.f[0]);
+  s1.remove_face(t.f[0]);
+  CHECK( ! g.dead(t.f[0]) && g.face(t.f[0]).surfaces == 1);
+  g.collect();
+  CHECK(g.face_capacity() == 4 && s1.face_number() == 3 && s2.face_number() == 1);
+  g.remove_surface(s2);
+  g.collect();
+  CHECK(g.face_capacity() == 3 && g.surface_number() == 1);
+}
+
+static void test_non_manifold_and_duplicates()
+{
+  Geometrium g;
+  Surface& s = g.new_surface();
+  VertexId a = g.add_vertex({0, 0, 0}), b = g.add_vertex({1, 0, 0});
+  EdgeId ab = g.add_edge(a, b);
+  for (int k = 0; k < 3; ++k)
+  {
+    VertexId c = g.add_vertex({0.5, double(k), 1});
+    s.add_face(g.add_face(ab, g.add_edge(b, c), g.add_edge(c, a)));
+  }
+  CHECK(count(g.faces_of(ab)) == 3 && count(g.edges_of(a)) == 4);
+  CHECK( ! is_manifold(s) && ! is_closed(s));
+  SurfaceStats st = stats(s);
+  CHECK(st.n_non_manifold_edges == 1 && st.n_boundary_edges == 6 && st.n_duplicate_edges == 0);
+
+  EdgeId ab2 = g.add_edge(b, a);
+  CHECK(g.duplicate_of(ab2) == ab && g.duplicate_of(ab) == ab2);
+  FaceId f0 = *s.faces().begin();
+  FaceId dup = g.add_face(g.face(f0).e[0], g.face(f0).e[1], g.face(f0).e[2]);
+  CHECK(g.duplicate_of(dup) == f0);
+}
+
+static void test_ring_order()
+{
+  Geometrium g;
+  VertexId c = g.add_vertex({0, 0, 0});
+  std::array<EdgeId, 4> e;
+  for (int k = 0; k < 4; ++k) e[k] = g.add_edge(c, g.add_vertex({double(k), 1, 0}));
+  auto ring = [&] { std::vector<Index> r; for (EdgeId x : g.edges_of(c)) r.push_back(x.i); return r; };
+  CHECK(ring() == (std::vector<Index>{ e[3].i, e[2].i, e[1].i, e[0].i }));
+  g.kill_edge(e[0]);
+  g.kill_edge(e[2]);
+  CHECK(ring() == (std::vector<Index>{ e[3].i, e[1].i }));
+  EdgeId e4 = g.add_edge(c, g.add_vertex({9, 9, 9}));
+  CHECK(ring() == (std::vector<Index>{ e4.i, e[3].i, e[1].i }));
+  std::vector<EdgeId> kept = { e4, e[3], e[1] };
+  Subscription sub = g.on_renumber([&](const Renumbering& r) { for (auto& x : kept) x = r(x); });
+  g.collect({ .edges = false, .vertices = false });
+  CHECK(ring() == (std::vector<Index>{ kept[0].i, kept[1].i, kept[2].i }));
+}
+
+static void test_attributes()
+{
+  Geometrium g;
+  Surface& s = g.new_surface();
+  auto pressure = g.add_vertex_attribute<float>("pressure",
+    Hooks<float>().on_interpolate([](float a, float b, double t) { return float(a + t * (b - a)); }));
+  auto stroke = g.add_vertex_attribute<int>("stroke");
+  auto crease = g.add_edge_attribute<std::uint8_t>("crease");
+  auto colour = g.add_face_attribute<int>("colour");
+  Tet t = tetrahedron(g, s);
+  for (int i = 0; i < 4; ++i) { pressure[t.v[i]] = float(i); stroke[t.v[i]] = 10 + i; colour[t.f[i]] = 100 + i; }
+  crease[t.e[5]] = 1;
+  VertexId m = g.interpolate_vertex(t.v[1], t.v[3], 0.25);
+  CHECK(pressure[m] == 1.5f && stroke[m] == 11 && g.vertex(m).p == (Vec3{0.75, 0, 0.25}));
+
+  s.remove_face(t.f[0]); s.remove_face(t.f[1]); s.remove_face(t.f[2]);
+  g.collect(); // left: face 3 (1-2-3) with its three edges and vertices
+  CHECK(g.vertex_capacity() == 3 && g.edge_capacity() == 3 && g.face_capacity() == 1);
+  float sum = 0; int ssum = 0;
+  for (Index i = 0; i < 3; ++i) { sum += pressure[VertexId(i)]; ssum += stroke[VertexId(i)]; }
+  CHECK(sum == 1 + 2 + 3 && ssum == 11 + 12 + 13);
+  CHECK(colour[FaceId(0)] == 103);
+  int creases = 0;
+  for (Index i = 0; i < 3; ++i) creases += crease[EdgeId(i)];
+  CHECK(creases == 1);
+}
+
+static void test_import()
+{
+  Geometrium g1, g2;
+  Surface& s = g1.new_surface("src");
+  auto p1 = g1.add_vertex_attribute<float>("pressure");
+  Tet t = tetrahedron(g1, s);
+  for (int i = 0; i < 4; ++i) p1[t.v[i]] = float(i + 1);
+  auto p2 = g2.add_vertex_attribute<float>("pressure");
+  Surface& d = g2.import(g1, s);
+  CHECK(d.face_number() == 4 && d.edge_number() == 6 && d.vertex_number() == 4 && d.name() == "src");
+  float sum = 0;
+  for (Index i = 0; i < g2.vertex_capacity(); ++i) sum += p2[VertexId(i)];
+  CHECK(sum == 10 && std::abs(volume(d) - volume(s)) < 1e-15);
+}
+
+static void test_io()
+{
+  Geometrium g;
+  Surface& s = g.new_surface();
+  tetrahedron(g, s);
+  std::stringstream ss;
+  write_gts(s, ss, { .precision = 17 });
+
+  Geometrium h;
+  auto r = read_gts(h, ss);
+  CHECK(r.has_value());
+  if (r)
+  {
+    Surface& t = **r;
+    CHECK(t.vertex_number() == 4 && t.edge_number() == 6 && t.face_number() == 4);
+    CHECK(volume(t) == volume(s) && area(t) == area(s));
+    std::stringstream again;
+    write_gts(t, again, { .precision = 17 });
+    std::stringstream first;
+    write_gts(s, first, { .precision = 17 });
+    CHECK(again.str() == first.str());
+  }
+
+  // A comment line, and extra tokens on a line, are skipped.
+  std::istringstream in("# a comment\n3 3 1 GtsSurface GtsFace GtsEdge GtsVertex\n"
+                        "0 0 0 extra\n1 0 0\n! another comment\n0 1 0\n1 2\n2 3\n3 1\n1 2 3\n");
+  auto c = read_gts(h, in);
+  CHECK(c.has_value() && (*c)->face_number() == 1);
+
+  // A comment at the end of a line swallows its newline, as in GTS, so the
+  // next line is skipped with it. The C library fails on this file with the
+  // same message.
+  std::istringstream trailing("3 3 1\n0 0 0\n1 0 0\n0 1 0 ! trailing\n1 2\n2 3\n3 1\n1 2 3\n");
+  auto tr = read_gts(h, trailing);
+  CHECK( ! tr.has_value());
+  if ( ! tr) CHECK(tr.error().message == "expecting an integer (first edge index)");
+
+  // An error leaves the Geometrium as it was.
+  const std::size_t nv = h.vertex_capacity(), ns = h.surface_number();
+  std::istringstream bad("3 3 1\n0 0 0\n1 0 0\n0 1 0\n1 2\n2 7\n3 1\n1 2 3\n");
+  auto e = read_gts(h, bad);
+  CHECK( ! e.has_value() && h.vertex_capacity() == nv && h.surface_number() == ns);
+  if ( ! e) CHECK(e.error().line == 6 && e.error().message.find("out of range") != std::string::npos);
+
+  std::istringstream notri("4 3 1\n0 0 0\n1 0 0\n0 1 0\n5 5 5\n1 2\n2 3\n1 4\n1 2 3\n");
+  auto n = read_gts(h, notri);
+  CHECK( ! n.has_value() && h.vertex_capacity() == nv);
+}
+
+static void test_threads()
+{
+  std::vector<std::thread> th;
+  for (int k = 0; k < 4; ++k)
+    th.emplace_back([k] {
+      Geometrium g;
+      Surface& s = g.new_surface();
+      for (int i = 0; i < 200; ++i) tetrahedron(g, s, Vec3{double(i), double(k), 0});
+      for (int i = 0; i < 100; ++i) s.remove_face(FaceId(Index(4 * i)));
+      g.collect();
+      CHECK(g.face_capacity() == 700 && s.face_number() == 700);
+    });
+  for (auto& x : th) x.join();
+  th.clear();
+
+  Geometrium g;
+  Surface& s = g.new_surface();
+  for (int i = 0; i < 200; ++i) tetrahedron(g, s, Vec3{double(i), 0, 0});
+  for (int k = 0; k < 4; ++k)
+    th.emplace_back([&] {
+      std::size_t n = 0;
+      for (Index i = 0; i < g.vertex_capacity(); ++i) n += count(g.edges_of(VertexId(i)));
+      CHECK(n == 2 * g.edge_capacity() && s.vertex_number() == 800 && is_closed(s));
+    });
+  for (auto& x : th) x.join();
+}
+
+static void test_set_face_edges()
+{
+  // Three faces on edge ab (non-manifold), then the middle one moves to
+  // another edge and its kept edge changes slot.
+  Geometrium g;
+  VertexId a = g.add_vertex({0, 0, 0}), b = g.add_vertex({1, 0, 0});
+  VertexId c = g.add_vertex({0, 1, 0}), d = g.add_vertex({0, 0, 1}), e = g.add_vertex({0, -1, 0});
+  VertexId m = g.add_vertex({0.5, 0, 0});
+  EdgeId ab = g.add_edge(a, b);
+  EdgeId bc = g.add_edge(b, c), ca = g.add_edge(c, a);
+  EdgeId bd = g.add_edge(b, d), da = g.add_edge(d, a);
+  EdgeId be = g.add_edge(b, e), ea = g.add_edge(e, a);
+  FaceId f1 = g.add_face(ab, bc, ca), f2 = g.add_face(ab, bd, da), f3 = g.add_face(ab, be, ea);
+  auto ring = [&](EdgeId x) { std::vector<FaceId> r; for (FaceId f : g.faces_of(x)) r.push_back(f); return r; };
+  CHECK(ring(ab) == (std::vector<FaceId>{ f3, f2, f1 }));
+
+  // f2 = (ab, bd, da) becomes (da, dm, ma): it leaves ab and bd, keeps da
+  // (from slot 2 to slot 0), joins dm and ma.
+  EdgeId am = g.add_edge(a, m), dm = g.add_edge(d, m);
+  FaceId other = g.add_face(da, bd, g.add_edge(a, b)); // a second face on da and bd
+  CHECK(ring(da) == (std::vector<FaceId>{ other, f2 }));
+  g.set_face_edges(f2, da, dm, am);
+  CHECK(ring(ab) == (std::vector<FaceId>{ f3, f1 }));
+  CHECK(ring(bd) == (std::vector<FaceId>{ other }));
+  CHECK(ring(da) == (std::vector<FaceId>{ other, f2 })); // kept its place
+  CHECK(ring(dm) == (std::vector<FaceId>{ f2 }) && ring(am) == (std::vector<FaceId>{ f2 }));
+  CHECK(g.next_around(f2, da) == other && g.face(f2).e[0] == da);
+  // Edges that do not form a triangle are refused, and nothing changes.
+  bool threw = false;
+  try { g.set_face_edges(f1, ab, bd, ea); } catch (const std::invalid_argument&) { threw = true; }
+  CHECK(threw && ring(ab) == (std::vector<FaceId>{ f3, f1 }) && g.face(f1).e[0] == ab);
+}
+
+static void test_eheap()
+{
+  // Smallest key first; equal keys come off in GtsEHeap's order.
+  EHeap<int> h([](const int& x) { return double(x / 10); });
+  for (int x : { 31, 10, 22, 11, 30, 21, 12 }) h.insert(x);
+  std::vector<int> out;
+  while (auto t = h.remove_top()) out.push_back(t->first);
+  // The order of GtsEHeap for the same insertions, from a C program.
+  CHECK(out == (std::vector<int>{ 10, 12, 11, 22, 21, 30, 31 }));
+
+  EHeap<int> f([](const int& x) { return double(x); });
+  f.freeze();
+  for (int x : { 5, 3, 8, 1, 9, 2 }) f.insert(x);
+  f.thaw();
+  const auto h9 = f.insert(9, 9.0);
+  f.decrease_key(h9, 0.0);
+  CHECK(f.top()->first == 9 && f.top()->second == 0.0);
+  const auto h7 = f.insert(7);
+  CHECK(f.remove(h7) == 7 && f.size() == 7);
+  out.clear();
+  while (auto t = f.remove_top()) out.push_back(t->first);
+  CHECK(out == (std::vector<int>{ 9, 1, 2, 3, 5, 8, 9 }));
+}
+
+static void test_default_hooks()
+{
+  Geometrium g;
+  auto d = g.add_vertex_attribute<double>("d");
+  auto i = g.add_vertex_attribute<int>("i");
+  auto p = g.add_vertex_attribute<Vec3>("p");
+  auto s = g.add_vertex_attribute<std::string>("s");
+  auto l = g.add_vertex_attribute<Label>("l");
+  auto h = g.add_vertex_attribute<double>("h", Hooks<double>().on_interpolate([](double, double, double) { return -1.0; }));
+  const VertexId a = g.add_vertex({0, 0, 0}), b = g.add_vertex({1, 0, 0});
+  d[a] = 1; d[b] = 3; i[a] = 1; i[b] = 3; p[a] = {0, 0, 0}; p[b] = {2, 4, 6};
+  s[a] = "a"; s[b] = "b"; l[a] = {1}; l[b] = {3}; h[a] = 1; h[b] = 3;
+  const VertexId m = g.interpolate_vertex(a, b, 0.75);
+  CHECK(d[m] == 2.5);              // affine: linear
+  CHECK(i[m] == 1);                // integers are labels: the first source
+  CHECK(p[m] == (Vec3{1.5, 3, 4.5}));
+  CHECK(s[m] == "a");
+  CHECK(l[m].id == 3);             // the specialization
+  CHECK(h[m] == -1);               // the hook given for this attribute
+}
+
+static void test_split_edge()
+{
+  // Split edge 01 of a tetrahedron that is in two surfaces. The faces on it
+  // are cut, the pieces join both surfaces, the hooks set the attributes,
+  // and a subscriber gives the cuts the colour of their face.
+  Geometrium g;
+  auto colour = g.add_face_attribute<int>("colour");
+  auto w = g.add_edge_attribute<double>("w", Hooks<double>().on_split([](double x) { return x / 2; }));
+  auto ecolour = g.add_edge_attribute<int>("colour");
+  Surface& s = g.new_surface();
+  Tet t = tetrahedron(g, s);
+  Surface& s2 = g.new_surface();
+  s2.add_face(t.f[1]);
+  for (int k = 0; k < 4; ++k) colour[t.f[k]] = 10 + k;
+  w[t.e[0]] = 8;
+
+  std::vector<EdgeSplitEvent> edges;
+  std::vector<std::pair<FaceId, std::vector<FaceId>>> faces;
+  Subscription sub = g.on_split([&](const SplitEvent& ev) {
+    edges.insert(edges.end(), ev.edges.begin(), ev.edges.end());
+    for (const auto& f : ev.faces)
+    {
+      faces.emplace_back(f.parent, std::vector<FaceId>(f.pieces.begin(), f.pieces.end()));
+      for (EdgeId c : f.cuts) ecolour[c] = colour[f.parent];
+    }
+  });
+
+  const VertexId m = g.interpolate_vertex(t.v[0], t.v[1], 0.5);
+  std::vector<EdgeId> made;
+  const auto halves = g.split_edge(t.e[0], m, [&](EdgeId e) { made.push_back(e); });
+  CHECK(made.size() == 4 && made[0] == halves[0] && made[1] == halves[1]);
+  CHECK(g.edge(halves[0]).v[0] == t.v[0] && g.edge(halves[1]).v[0] == t.v[1]);
+  CHECK(g.dead(t.e[0]) && w[halves[0]] == 4 && w[halves[1]] == 4);
+  CHECK(s.face_number() == 6 && is_closed(s) && is_orientable(s) && std::abs(volume(s) - 1.0 / 6) < 1e-15);
+  CHECK(s2.face_number() == 2); // f1 and its new piece
+  CHECK(edges.size() == 1 && edges[0].parent == t.e[0] && edges[0].vertex == m && edges[0].halves == halves);
+  CHECK(faces.size() == 2);
+  for (const auto& [parent, pieces] : faces)
+  {
+    CHECK(pieces.size() == 2 && pieces[0] == parent);
+    for (FaceId f : pieces) CHECK(colour[f] == colour[parent]);
+  }
+  CHECK(ecolour[made[2]] != 0 && ecolour[made[3]] != 0 && ecolour[made[2]] != ecolour[made[3]]);
+
+  // Split a face in four: three edge splits (one edge is a half already
+  // split above, but the memo is new), one face split with three cuts.
+  edges.clear(); faces.clear();
+  g.split_face4(t.f[3], midvertex);
+  CHECK(edges.size() == 3 && faces.size() == 1 && faces[0].second.size() == 4);
+  CHECK(s.face_number() == 9 && ! is_closed(s)); // the neighbours keep the old edges: open seams
+  sub.reset();
+  edges.clear();
+  g.split_face4(*s.faces().begin(), midvertex);
+  CHECK(edges.empty() && s.face_number() == 12);
+}
+
+// An octahedron with its faces oriented outwards: vertices +x +y -x -y +z -z.
+static std::array<VertexId, 6> octahedron(Geometrium& g, Surface& s)
+{
+  std::array<VertexId, 6> v = { g.add_vertex({1, 0, 0}), g.add_vertex({0, 1, 0}), g.add_vertex({-1, 0, 0}),
+                                g.add_vertex({0, -1, 0}), g.add_vertex({0, 0, 1}), g.add_vertex({0, 0, -1}) };
+  auto edge = [&](VertexId a, VertexId b) { EdgeId e = g.find_edge(a, b); return e.valid() ? e : g.add_edge(a, b); };
+  for (int k = 0; k < 4; ++k)
+  {
+    const VertexId a = v[k], b = v[(k + 1) % 4];
+    s.add_face(g.add_face(edge(a, b), edge(b, v[4]), edge(v[4], a)));
+    s.add_face(g.add_face(edge(b, a), edge(a, v[5]), edge(v[5], b)));
+  }
+  return v;
+}
+
+static void test_collapse()
+{
+  {
+    // Every edge of a tetrahedron belongs to a tetrahedron.
+    Geometrium g;
+    Surface& s = g.new_surface();
+    Tet t = tetrahedron(g, s);
+    for (EdgeId e : t.e) CHECK( ! g.collapsible(e));
+  }
+
+  Geometrium g;
+  auto w = g.add_vertex_attribute<double>("w");
+  auto label = g.add_vertex_attribute<int>("label");
+  auto n = g.add_edge_attribute<int>("n", Hooks<int>().on_merge([](int a, int b) { return a + b; }));
+  Surface& s = g.new_surface();
+  const auto v = octahedron(g, s);
+  CHECK(is_closed(s) && is_orientable(s) && volume(s) > 0);
+  for (int k = 0; k < 6; ++k) { w[v[k]] = k; label[v[k]] = 10 + k; }
+  for (Index i = 0; i < g.edge_capacity(); ++i) n[EdgeId(i)] = 1;
+
+  const EdgeId e = g.find_edge(v[4], v[0]);
+  CHECK(g.collapsible(e));
+  // Faces folding back onto each other; the C library agrees on this and on
+  // a grid of 9261 positions around the octahedron.
+  CHECK(g.collapse_folds(e, {-3, -3, 0}, std::pow(std::cos(std::numbers::pi / 180), 2)));
+  CHECK( ! g.collapse_folds(e, {0.5, 0, 0.5}, std::pow(std::cos(std::numbers::pi / 180), 2)));
+
+  std::vector<CollapseEvent> events;
+  std::vector<std::array<EdgeId, 2>> merged;
+  Subscription sub = g.on_collapse([&](const CollapseEvent& ev) {
+    events.push_back(ev);
+    merged.assign(ev.merged_edges.begin(), ev.merged_edges.end());
+  });
+  std::vector<EdgeId> removed;
+  const VertexId m = g.collapse_edge(e, {0.5, 0, 0.5}, [&](EdgeId x) { removed.push_back(x); });
+  CHECK(m.valid() && g.dead(v[4]) && g.dead(v[0]) && g.dead(e));
+  CHECK(s.vertex_number() == 5 && s.edge_number() == 9 && s.face_number() == 6);
+  CHECK(is_closed(s) && is_manifold(s) && is_orientable(s) && volume(s) > 0);
+  CHECK(w[m] == 2 && label[m] == 14); // the mean of 4 and 0; the first source
+  CHECK(events.size() == 1 && events[0].faces.size() == 2 && events[0].vertex == m);
+  CHECK(merged.size() == 2 && removed.size() == 2 && events[0].removed_edges.empty());
+  for (auto [kept, gone] : merged)
+  {
+    CHECK( ! g.dead(kept) && g.dead(gone) && n[kept] == 2);
+    CHECK(std::ranges::find(removed, gone) != removed.end());
+  }
+  for (EdgeId x : g.edges_of(m)) CHECK( ! g.dead(x) && count(g.faces_of(x)) == 2);
+}
+
+static void test_coarsen()
+{
+  Geometrium g;
+  Surface& s = generate_sphere(g.new_surface(), 4);
+  const double v0 = volume(s);
+  coarsen(s, stop_below_edges(300), [](const Geometrium& g, EdgeId e) { return volume_optimized_cost(g, e); },
+          [](const Geometrium& g, EdgeId e) { return volume_optimized_vertex(g, e); }, std::numbers::pi / 180);
+  // Stops before a collapse would leave fewer than 300 edges.
+  CHECK(s.edge_number() >= 300 && s.edge_number() < 303);
+  CHECK(is_closed(s) && is_manifold(s) && is_orientable(s));
+  CHECK(std::abs(volume(s) - v0) < 1e-3 * v0); // volume-optimized collapses keep the volume
+  for (VertexId x : s.vertices()) CHECK( ! g.dead(x));
+  g.collapse_folds(*s.edges().begin(), {}, 1.0); // queries work on the coarsened surface
+  g.collect();
+  CHECK(g.edge_capacity() == s.edge_number() && is_closed(s));
+}
+
+static void test_iso()
+{
+  // sample() steps by adding dx and dy, as GTS's callers did.
+  const CartesianGrid g = { 21, 21, 21, -1.25, 0.125, -1.25, 0.125, -1.25, 0.125 };
+  PlaneValues plane(g.nx, g.ny);
+  sample([](Vec3 p) { return p.x + 10 * p.y + 100 * p.z; })(plane, g, 0);
+  double x = g.x, y = g.y;
+  for (unsigned i = 0; i < 20; ++i) x += g.dx;
+  for (unsigned j = 0; j < 7; ++j) y += g.dy;
+  CHECK(plane(20, 7) == x + 10 * y + 100 * g.z);
+
+  auto sphere = sample([](Vec3 p) { return p.x * p.x + p.y * p.y + p.z * p.z; });
+  {
+    Geometrium geo;
+    Surface& s = geo.new_surface();
+    isosurface_cartesian(s, g, sphere, 1.0);
+    CHECK(is_closed(s) && is_manifold(s) && is_orientable(s));
+    // Oriented towards f > iso, that is outwards.
+    CHECK(volume(s) > 0 && std::abs(volume(s) - 4 * std::numbers::pi / 3) < 0.05);
+    // Vertices are made only where faces use them.
+    CHECK(geo.vertex_capacity() == s.vertex_number());
+    for (VertexId v : s.vertices()) CHECK(std::abs(norm(geo.vertex(v).p) - 1) < 0.02);
+  }
+  {
+    Geometrium geo;
+    Surface& s = geo.new_surface();
+    isosurface_tetra(s, g, sphere, 1.0);
+    // Oriented towards f < iso, the opposite of the cartesian method.
+    CHECK(is_closed(s) && is_manifold(s) && volume(s) < 0);
+  }
+  {
+    Geometrium geo;
+    Surface& s = geo.new_surface();
+    bool threw = false;
+    try { isosurface_cartesian(s, { 1, 2, 2, 0, 1, 0, 1, 0, 1 }, sphere, 1.0); }
+    catch (const std::invalid_argument&) { threw = true; }
+    CHECK(threw && s.face_number() == 0);
+  }
+}
+
+// An axis-aligned box from lo to hi, its faces oriented outwards.
+static Surface& box(Geometrium& g, Vec3 lo, Vec3 hi)
+{
+  Surface& s = g.new_surface();
+  VertexId v[8];
+  for (int k = 0; k < 8; ++k)
+    v[k] = g.add_vertex({ k & 1 ? hi.x : lo.x, k & 2 ? hi.y : lo.y, k & 4 ? hi.z : lo.z });
+  auto edge = [&](VertexId a, VertexId b) { EdgeId e = g.find_edge(a, b); return e.valid() ? e : g.add_edge(a, b); };
+  auto tri = [&](int a, int b, int c) { s.add_face(g.add_face(edge(v[a], v[b]), edge(v[b], v[c]), edge(v[c], v[a]))); };
+  const int quads[6][4] = { {0, 2, 3, 1}, {4, 5, 7, 6}, {0, 1, 5, 4}, {2, 6, 7, 3}, {0, 4, 6, 2}, {1, 3, 7, 5} };
+  for (auto& q : quads) { tri(q[0], q[1], q[2]); tri(q[0], q[2], q[3]); }
+  return s;
+}
+
+static void test_predicates_and_bbtree()
+{
+  const Vec3 a{0, 0, 0}, b{1, 0, 0}, c{0, 1, 0};
+  CHECK(orient3d(a, b, c, Vec3{0, 0, -1}) > 0 && orient3d(a, b, c, Vec3{0, 0, 1}) < 0);
+  CHECK(orient3d(a, b, c, Vec3{0.3, 0.3, 0}) == 0);
+  // Simulation of Simplicity never answers zero, and swapping two points
+  // turns the answer over.
+  const Vec3 d{0.3, 0.3, 0};
+  const Vec3* p1[4] = { &a, &b, &c, &d };
+  const Vec3* p2[4] = { &b, &a, &c, &d };
+  const unsigned r1[4] = { 0, 1, 2, 3 }, r2[4] = { 1, 0, 2, 3 };
+  CHECK(orient3d_sos(p1, r1) != 0 && orient3d_sos(p1, r1) == - orient3d_sos(p2, r2));
+
+  Geometrium g;
+  Surface& s1 = box(g, {0, 0, 0}, {1, 1, 1});
+  Surface& s2 = box(g, {3, 0, 0}, {4, 1, 1});
+  Surface& s3 = box(g, {0.5, 0.5, 0.5}, {2, 2, 2});
+  std::size_t n12 = 0, n13 = 0, n11 = 0;
+  const BBTree t1(s1), t2(s2), t3(s3);
+  BBTree::traverse_overlapping(t1, t2, [&](FaceId, FaceId) { ++n12; });
+  BBTree::traverse_overlapping(t1, t3, [&](FaceId f1, FaceId f2) { CHECK(s1.contains(f1) && s3.contains(f2)); ++n13; });
+  BBTree::traverse_overlapping(t1, t1, [&](FaceId, FaceId) { ++n11; });
+  CHECK(n12 == 0 && n13 > 0 && n11 >= 12);
+}
+
+static void test_boolean()
+{
+  // Boxes in general position: no vertex in the plane of a face of the other.
+  const double overlap = 0.5 * 0.75 * 0.875;
+  struct Case { const char* name; BooleanOp op1, op2; double volume; };
+  for (const Case& c : { Case{ "union", BooleanOp::A_out_B, BooleanOp::B_out_A, 2 - overlap },
+                         Case{ "inter", BooleanOp::A_in_B,  BooleanOp::B_in_A,  overlap },
+                         Case{ "diff",  BooleanOp::A_out_B, BooleanOp::B_in_A,  1 - overlap } })
+  {
+    Geometrium g;
+    Surface& a = box(g, {0, 0, 0}, {1, 1, 1});
+    Surface& b = box(g, {0.5, 0.25, 0.125}, {1.5, 1.25, 1.125});
+    CHECK(volume(a) > 0 && volume(b) > 0 && ! is_self_intersecting(a));
+    Surface& r = g.new_surface();
+    {
+      SurfaceInter si(a, b);
+      const auto check = si.check();
+      CHECK(check.ok && check.closed && si.sos_ties() == 0 && ! si.edges().empty());
+      si.boolean(r, c.op1);
+      si.boolean(r, c.op2);
+      // The difference keeps the inside of b, turned over.
+      if (std::string_view(c.name) == "diff")
+      {
+        for (FaceId f : si.pieces_b().faces()) g.revert_face(f);
+        for (FaceId f : b.faces())             g.revert_face(f);
+      }
+    }
+    g.remove_surface(a);
+    g.remove_surface(b);
+    CHECK(is_closed(r) && is_manifold(r) && is_orientable(r));
+    CHECK(std::abs(volume(r) - c.volume) < 1e-12);
+    CHECK( ! is_self_intersecting(r));
+    g.collect();
+    CHECK(std::abs(volume(r) - c.volume) < 1e-12);
+  }
+
+  // Boxes sharing the plane x = 1: degenerate, decided by Simulation of
+  // Simplicity, and still valid.
+  {
+    Geometrium g;
+    Surface& a = box(g, {0, 0, 0}, {1, 1, 1});
+    Surface& b = box(g, {1, 0.25, 0.25}, {2, 0.75, 0.75});
+    Surface& r = g.new_surface();
+    {
+      SurfaceInter si(a, b);
+      CHECK(si.sos_ties() > 0);
+      const auto check = si.check();
+      if (check.ok && check.closed)
+      {
+        si.boolean(r, BooleanOp::A_out_B);
+        si.boolean(r, BooleanOp::B_out_A);
+      }
+    }
+    if (r.face_number() > 0)
+      CHECK(is_closed(r) && is_manifold(r) && is_orientable(r) && std::abs(volume(r) - 1.25) < 1e-12);
+  }
+
+  // Two boxes through each other in one surface intersect themselves.
+  {
+    Geometrium g;
+    Surface& a = box(g, {0, 0, 0}, {1, 1, 1});
+    Surface& b = box(g, {0.5, 0.25, 0.125}, {1.5, 1.25, 1.125});
+    std::size_t pairs = 0;
+    CHECK( ! foreach_intersecting_face(a, [&](FaceId, FaceId) { ++pairs; }) && pairs == 0);
+    for (FaceId f : b.faces()) a.add_face(f);
+    CHECK(foreach_intersecting_face(a, [&](FaceId, FaceId) { ++pairs; }) && pairs > 0);
+  }
+}
+
+static void test_small_functions()
+{
+  Geometrium g;
+  Surface& s = g.new_surface();
+  Tet t = tetrahedron(g, s);
+  // Face 0 is 0-2-1 with edges 02, 12, 01; face 1 is 0-1-3.
+  CHECK(g.opposite_edge(t.f[0], t.v[0]) == t.e[3]);
+  CHECK(g.opposite_edge(t.f[0], t.v[1]) == t.e[1]);
+  CHECK( ! g.opposite_edge(t.f[0], t.v[3]).valid());
+  CHECK(g.common_edge(t.f[0], t.f[1]) == t.e[0] && g.common_edge(t.f[1], t.f[0]) == t.e[0]);
+  // The bottom face, 0-2-1, runs clockwise seen from +z.
+  CHECK(g.orientation(t.f[0]) < 0);
+
+  // gts_surface_copy: new elements, the same shape.
+  Surface& c = g.new_surface();
+  g.import(g, s, c);
+  CHECK(c.face_number() == 4 && is_closed(c) && std::abs(volume(c) - volume(s)) < 1e-15);
+  for (FaceId f : c.faces()) CHECK( ! s.contains(f));
+  bool threw = false;
+  try { g.import(g, s, s); } catch (const std::invalid_argument&) { threw = true; }
+  CHECK(threw);
+
+  // gts_surface_merge
+  Surface& m = g.new_surface();
+  m.merge(s);
+  m.merge(c);
+  CHECK(m.face_number() == 8 && t.f[0].i < g.face_capacity());
+
+  std::ostringstream out;
+  print_stats(s, out);
+  CHECK(out.str().starts_with("# vertices: 4 edges: 6 faces: 4\n"));
+}
+
+static void test_cluster()
+{
+  Geometrium g;
+  Surface& in = generate_sphere(g.new_surface(), 4);
+  BBox b;
+  for (VertexId v : in.vertices()) b.add(g.vertex(v).p);
+  Surface& out = g.new_surface();
+  Range r;
+  const std::size_t nv0 = g.vertex_capacity();
+  {
+    ClusterGrid grid(out, b, 0.3);
+    for (FaceId f : in.faces())
+    {
+      const auto v = g.vertices_of(f);
+      grid.add_triangle(g.vertex(v[0]).p, g.vertex(v[1]).p, g.vertex(v[2]).p);
+    }
+    r = grid.update();
+  }
+  CHECK(out.face_number() > 0 && out.face_number() < in.face_number());
+  CHECK(r.n > 0 && r.min >= 1 && r.n == g.vertex_capacity() - nv0);
+  // Each vertex is the mean of points on the unit sphere, so inside it.
+  for (VertexId v : out.vertices()) CHECK(norm(g.vertex(v).p) <= 1 + 1e-12 && norm(g.vertex(v).p) > 0.7);
+  // Clusters that no face uses are removed with the grid.
+  for (Index i = Index(nv0); i < g.vertex_capacity(); ++i)
+    CHECK(g.dead(VertexId(i)) || g.vertex(VertexId(i)).edge.valid());
+
+  bool threw = false;
+  try { ClusterGrid bad(out, b, 0.); } catch (const std::invalid_argument&) { threw = true; }
+  CHECK(threw);
+}
+
+static void test_sphere()
+{
+  for (unsigned order = 1; order <= 4; ++order)
+  {
+    Geometrium g;
+    Surface& s = generate_sphere(g.new_surface(), order);
+    const std::size_t nf = 20u << (2 * (order - 1));
+    CHECK(s.face_number() == nf && s.edge_number() == nf * 3 / 2 && s.vertex_number() == nf / 2 + 2);
+    CHECK(is_closed(s) && is_manifold(s) && is_orientable(s) && volume(s) > 0);
+    for (VertexId v : s.vertices()) CHECK(std::abs(norm(g.vertex(v).p) - 1) < 1e-15);
+    // No dead element is left in a ring, and every edge has two faces.
+    for (EdgeId e : s.edges()) CHECK( ! g.dead(e) && count(g.faces_of(e)) == 2);
+  }
+  Geometrium g;
+  bool threw = false;
+  try { generate_sphere(g.new_surface(), 0); } catch (const std::invalid_argument&) { threw = true; }
+  CHECK(threw);
+}
+
+static void test_tessellate()
+{
+  // Mid-edge tessellation of a tetrahedron keeps the area and the volume,
+  // interpolates a vertex attribute, and leaves the face it splits in place.
+  Geometrium g;
+  auto w = g.add_vertex_attribute<double>("w", Hooks<double>().on_interpolate([](double a, double b, double t) { return a + t * (b - a); }));
+  Surface& s = g.new_surface();
+  Tet t = tetrahedron(g, s);
+  for (int k = 0; k < 4; ++k) w[t.v[k]] = k;
+  const double a0 = area(s), v0 = volume(s);
+  tessellate(s, midvertex);
+  CHECK(s.face_number() == 16 && s.edge_number() == 24 && s.vertex_number() == 10);
+  CHECK(std::abs(area(s) - a0) < 1e-14 && std::abs(volume(s) - v0) < 1e-15);
+  CHECK(is_closed(s) && is_orientable(s));
+  for (FaceId f : t.f) CHECK(s.contains(f) && ! g.dead(f));
+  for (EdgeId e : t.e) CHECK(g.dead(e));
+  for (VertexId v : s.vertices())
+  {
+    if (v.i < 4) continue;
+    // A midvertex has the mean weight of the two corners it lies between.
+    double sum = 0;
+    int k = 0;
+    for (int i = 0; i < 4; ++i)
+      for (int j = i + 1; j < 4; ++j)
+        if (distance(0.5 * (g.vertex(t.v[i]).p + g.vertex(t.v[j]).p), g.vertex(v).p) < 1e-15) { sum = (i + j) / 2.; ++k; }
+    CHECK(k == 1 && w[v] == sum);
+  }
+
+  // A face of another surface on an edge of s keeps that edge, which s's
+  // faces no longer use.
+  Geometrium h;
+  Surface& s1 = h.new_surface();
+  Surface& s2 = h.new_surface();
+  Tet u = tetrahedron(h, s1);
+  const VertexId x = h.add_vertex({1, 1, -1});
+  const FaceId outside = h.add_face(u.e[0], h.add_edge(u.v[1], x), h.add_edge(x, u.v[0]));
+  s2.add_face(outside);
+  tessellate(s1, midvertex);
+  CHECK( ! h.dead(u.e[0]) && count(h.faces_of(u.e[0])) == 1 && *h.faces_of(u.e[0]).begin() == outside);
+  CHECK(s1.face_number() == 16 && is_closed(s1));
+}
+
+static void test_refine()
+{
+  Geometrium g;
+  Surface& s = g.new_surface();
+  tetrahedron(g, s);
+  const double a0 = area(s), v0 = volume(s);
+  double last = -1e300;
+  std::size_t n_split = 0;
+  // Costs come off the heap in increasing order: the longest edge first.
+  refine(s, [&](double cost, std::size_t) { CHECK(cost >= last); last = cost; return n_split++ == 10; });
+  // Each split of an edge between two faces adds a vertex, three edges and two faces.
+  CHECK(s.vertex_number() == 14 && s.edge_number() == 36 && s.face_number() == 24);
+  CHECK(std::abs(area(s) - a0) < 1e-14 && std::abs(volume(s) - v0) < 1e-15);
+  CHECK(is_closed(s) && is_manifold(s) && is_orientable(s));
+  // The longest edge left is no longer than the shortest edge split last.
+  double longest = 0;
+  for (EdgeId e : s.edges()) longest = std::max(longest, distance(g.segment(e).a, g.segment(e).b));
+  CHECK(longest * longest <= -last + 1e-15);
+}
+
+static void test_swap_edge()
+{
+  // A square 0-1-2-3 cut along 0-2, both faces counterclockwise from +z.
+  Geometrium g;
+  Surface& s = g.new_surface();
+  auto ids = g.add_face_attribute<int>("id");
+  const VertexId v[4] = { g.add_vertex({0, 0, 0}), g.add_vertex({1, 0, 0}), g.add_vertex({1, 1, 0}), g.add_vertex({0, 1, 0}) };
+  const EdgeId e01 = g.add_edge(v[0], v[1]), e12 = g.add_edge(v[1], v[2]), e23 = g.add_edge(v[2], v[3]),
+               e30 = g.add_edge(v[3], v[0]), e02 = g.add_edge(v[0], v[2]);
+  const FaceId f1 = g.add_face(e01, e12, e02), f2 = g.add_face(e02, e23, e30);
+  CHECK(g.normal(f1).z > 0 && g.normal(f2).z > 0);
+  ids[f1] = 7; ids[f2] = 8;
+  s.add_face(f1); s.add_face(f2);
+
+  swap_edge(s, e02);
+  CHECK(s.face_number() == 2 && g.dead(e02) && g.dead(f1) && g.dead(f2));
+  const EdgeId e13 = g.find_edge(v[1], v[3]);
+  CHECK(e13.valid() && count(g.faces_of(e13)) == 2);
+  int sum = 0;
+  for (FaceId f : s.faces()) { CHECK(g.normal(f).z > 0); sum += ids[f]; }
+  CHECK(sum == 15);
+  CHECK(is_orientable(s) && std::abs(area(s) - 1) < 1e-15);
+
+  // A third face on the edge, and an edge on the boundary, refuse the swap.
+  const VertexId w = g.add_vertex({1, 1, 1});
+  s.add_face(g.add_face(e13, g.add_edge(v[3], w), g.add_edge(w, v[1])));
+  bool threw = false;
+  try { swap_edge(s, e13); } catch (const std::invalid_argument&) { threw = true; }
+  CHECK(threw);
+  threw = false;
+  try { swap_edge(s, e01); } catch (const std::invalid_argument&) { threw = true; }
+  CHECK(threw);
+}
+
+static void test_distance_inside_curvature_merge()
+{
+  Geometrium g;
+  Surface& s = g.new_surface();
+  Tet t = tetrahedron(g, s);
+
+  // Point to edge and face, and the closest points.
+  CHECK(std::abs(distance(g, {0.5, -1, 0}, t.e[0]) - 1) < 1e-15);
+  CHECK(closest_point(g, {2, 0, 0}, t.e[0]) == (Vec3{1, 0, 0}));
+  CHECK(std::abs(distance(g, {0.2, 0.2, -2}, t.f[0]) - 2) < 1e-15);
+  const Vec3 c = closest_point(g, {1, 1, 1}, t.f[3]);
+  CHECK(std::abs(c.x - 1./3) < 1e-15 && std::abs(c.y - 1./3) < 1e-15 && std::abs(c.z - 1./3) < 1e-15);
+  CHECK( ! intersection(g, {0.1, 0.1, 1}, {0.1, 0.1, 2}, t.f[0], false));
+  const auto x = intersection(g, {0.1, 0.2, 1}, {0.1, 0.2, -1}, t.f[0], false);
+  CHECK(x && std::abs(x->x - 0.1) < 1e-15 && std::abs(x->y - 0.2) < 1e-15 && x->z == 0);
+
+  // Inside, also where the ray meets an edge or a vertex exactly.
+  const BBTree tree(s);
+  CHECK(is_inside(tree, {0.1, 0.1, 0.1}) && ! is_inside(tree, {1, 1, 1}));
+  CHECK(is_inside(tree, {0.1, 0.2, 0.3}, true) == false);
+  CHECK(is_inside(tree, {-1, 0.25, 0.25}) == false);  // through the left face's middle
+  CHECK(is_inside(tree, {0.2, 0.0, 0.0}) == is_inside(tree, {0.2, 0.0, 0.0})); // on an edge: repeatable
+  CHECK(is_inside(tree, {-1, 0, 0}) == false);        // the ray runs along an edge
+  CHECK(std::abs(tree.point_distance({0.2, 0.2, -2}) - 2) < 1e-15);
+  double d2;
+  const Vec3 cp = tree.point_closest({2, 0, 0}, {}, &d2);
+  CHECK(cp == (Vec3{1, 0, 0}) && d2 == 1);
+
+  // Two concentric spheres: the distance is the difference of the radii.
+  Surface& a = g.new_surface();
+  Surface& b = g.new_surface();
+  generate_sphere(a, 4);
+  generate_sphere(b, 4);
+  for (VertexId v : b.vertices()) g.position(v) = 1.5 * g.vertex(v).p;
+  const SurfaceDistance sd = distance(b, a, 0.05);
+  // The inside of the outer sphere's flat faces is a little closer.
+  CHECK(sd.faces.min > 0.49 && std::abs(sd.faces.max - 0.5) < 1e-12 && sd.boundary.n == 0);
+
+  // Curvature of the unit sphere: mean 1, Gaussian 1, Kh along the inward
+  // normal.
+  for (VertexId v : a.vertices())
+  {
+    const auto kh = mean_curvature_normal(a, v);
+    const auto kg = gaussian_curvature(a, v);
+    CHECK(kh && kg);
+    if ( ! kh || ! kg) break;
+    const Vec3 p = g.vertex(v).p;
+    CHECK(std::abs(norm(*kh) / 2 - 1) < 5e-3 && dot(*kh, p) < 0 && std::abs(*kg - 1) < 1e-2);
+    const auto [e1, e2] = principal_directions(a, v, *kh, *kg);
+    CHECK(std::abs(dot(e1, p)) < 1e-2 && std::abs(dot(e1, e2)) < 1e-12);
+  }
+
+  // Centres and boundary.
+  const CenterOfMass cm = center_of_mass(s);
+  CHECK(std::abs(cm.volume - 1./6) < 1e-15 && std::abs(cm.center.x - 0.25) < 1e-15 && std::abs(cm.center.z - 0.25) < 1e-15);
+  CHECK(std::abs(center_of_area(a).center.x) < 1e-15 && boundary(a).empty());
+
+  // Faces on vertices of their own, merged back into a closed tetrahedron.
+  Geometrium h;
+  Surface& u = h.new_surface();
+  std::vector<VertexId> vs;
+  std::vector<EdgeId> es;
+  for (FaceId f : s.faces())
+  {
+    const auto o = g.vertices_of(f);
+    VertexId v[3];
+    for (int k = 0; k < 3; ++k) vs.push_back(v[k] = h.add_vertex(g.vertex(o[k]).p + Vec3{1e-12 * k, 0, 0}));
+    EdgeId e[3];
+    for (int k = 0; k < 3; ++k) es.push_back(e[k] = h.add_edge(v[k], v[(k + 1) % 3]));
+    u.add_face(h.add_face(e[0], e[1], e[2]));
+  }
+  CHECK(KdTree(h, vs).range({ {-0.1, -0.1, -0.1}, {0.1, 0.1, 0.1} }).size() == 3);
+  CHECK( ! is_closed(u));
+  vs = h.merge_vertices(vs, 1e-9);
+  es = h.merge_edges(es);
+  CHECK(vs.size() == 4 && es.size() == 6 && is_closed(u) && is_orientable(u));
+  CHECK(u.vertex_number() == 4 && u.edge_number() == 6);
+
+  // A merge across an edge removes the edge and its faces: with vertex 1
+  // next to vertex 0, the bottom and front faces go, and the other two
+  // become duplicates on duplicate edges.
+  Geometrium k;
+  Surface& w = k.new_surface();
+  const Tet tk = tetrahedron(k, w);
+  k.position(tk.v[1]) = { 1e-12, 0, 0 };
+  std::vector<VertexId> all(tk.v.begin(), tk.v.end());
+  all = k.merge_vertices(all, 1e-9);
+  CHECK(all.size() == 3 && k.dead(tk.v[1]) && k.dead(tk.e[0]) && k.dead(tk.f[0]) && k.dead(tk.f[1]));
+  CHECK(w.face_number() == 2 && k.merge_edges({ tk.e[1], tk.e[2], tk.e[3], tk.e[4], tk.e[5] }).size() == 3);
+  CHECK(remove_duplicate_faces(w) == 1 && w.face_number() == 1 && remove_duplicate_faces(w) == 0);
+}
+
+int main()
+{
+  std::println("sizeof Vertex {}, Edge {}, Face {}", sizeof(Vertex), sizeof(Edge), sizeof(Face));
+  test_build_and_rings();
+  test_orientation();
+  test_release_cascade();
+  test_keep_orphans();
+  test_shared_faces();
+  test_non_manifold_and_duplicates();
+  test_ring_order();
+  test_attributes();
+  test_import();
+  test_io();
+  test_threads();
+  test_set_face_edges();
+  test_eheap();
+  test_default_hooks();
+  test_split_edge();
+  test_sphere();
+  test_tessellate();
+  test_refine();
+  test_collapse();
+  test_swap_edge();
+  test_coarsen();
+  test_iso();
+  test_predicates_and_bbtree();
+  test_boolean();
+  test_small_functions();
+  test_cluster();
+  test_distance_inside_curvature_merge();
+  std::println("{}", g_failed ? "FAILED" : "all passed");
+  return g_failed != 0;
+}

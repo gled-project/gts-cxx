@@ -1,0 +1,7 @@
+/build/
+/lib/
+/test/compare/gts-ref
+/test/compare/gts-cxx
+/test/compare/out/
+/test/unit/test-core
+*.o

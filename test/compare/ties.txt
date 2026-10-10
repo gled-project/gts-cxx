@@ -1,0 +1,21 @@
+# Cases where costs tie and GTS chooses between the tied edges by the order
+# of its face hash table, which follows memory addresses. The C library gives
+# different results from run to run on these cases without "setarch -R", and
+# the C++ library chooses differently again. compare.py does not count their
+# summaries as differences; compare.sh instead checks that the two surfaces
+# are within MAX_DISTANCE of each other both ways (gts_surface_distance),
+# a tenth of the mean edge length of the result.
+#
+# Each line is: NAME  MAX_DISTANCE
+
+coarsen-sphere5-volume-number-1000      0.02
+coarsen-iso-torus-length-cost-0.0625    0.008
+coarsen-iso-torus-length-then-angle     0.008
+
+# The boolean cases below have no exact degeneracy, but the faces cut by the
+# intersection curve are triangulated by ear clipping from the start of
+# lists whose order follows GTS's bounding-box tree, which GTS builds in the
+# order of its face hash table. The same polygons get different diagonals:
+# 5 faces of a few thousand differ, and every vertex agrees.
+bool-inter-horse5-horse6                0.0006
+bool-diff-horse5-horse6                 0.0006
