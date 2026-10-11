@@ -506,22 +506,27 @@ static void test_coarsen()
 
 static void test_iso()
 {
-  // sample() steps by adding dx and dy, as GTS's callers did.
+  // sample() evaluates plane k at grid_point(): g.x + i * g.dx and so on,
+  // which adding up the steps would not give with a step of 0.1.
+  {
+    const CartesianGrid h = { 21, 21, 21, -1, 0.1, -1, 0.1, -1, 0.1 };
+    PlaneValues plane(h.nx, h.ny);
+    sample([](Vec3 p) { return p.x + 10 * p.y + 100 * p.z; })(plane, h, 13);
+    const double x = h.x + 20 * h.dx, y = h.y + 7 * h.dy, z = h.z + 13 * h.dz;
+    CHECK(plane(20, 7) == x + 10 * y + 100 * z);
+    double xs = h.x;
+    for (unsigned i = 0; i < 20; ++i) xs += h.dx;
+    CHECK(xs != x); // the steps add up to another value
+  }
   const CartesianGrid g = { 21, 21, 21, -1.25, 0.125, -1.25, 0.125, -1.25, 0.125 };
-  PlaneValues plane(g.nx, g.ny);
-  sample([](Vec3 p) { return p.x + 10 * p.y + 100 * p.z; })(plane, g, 0);
-  double x = g.x, y = g.y;
-  for (unsigned i = 0; i < 20; ++i) x += g.dx;
-  for (unsigned j = 0; j < 7; ++j) y += g.dy;
-  CHECK(plane(20, 7) == x + 10 * y + 100 * g.z);
 
-  auto sphere = sample([](Vec3 p) { return p.x * p.x + p.y * p.y + p.z * p.z; });
+  // A potential, larger inside: the faces point outwards, towards f < iso.
+  auto sphere = sample([](Vec3 p) { return - (p.x * p.x + p.y * p.y + p.z * p.z); });
   {
     Geometrium geo;
     Surface& s = geo.new_surface();
-    isosurface_cartesian(s, g, sphere, 1.0);
+    isosurface_cartesian(s, g, sphere, -1.0);
     CHECK(is_closed(s) && is_manifold(s) && is_orientable(s));
-    // Oriented towards f > iso, that is outwards.
     CHECK(volume(s) > 0 && std::abs(volume(s) - 4 * std::numbers::pi / 3) < 0.05);
     // Vertices are made only where faces use them.
     CHECK(geo.vertex_capacity() == s.vertex_number());
@@ -530,15 +535,14 @@ static void test_iso()
   {
     Geometrium geo;
     Surface& s = geo.new_surface();
-    isosurface_tetra(s, g, sphere, 1.0);
-    // Oriented towards f < iso, the opposite of the cartesian method.
-    CHECK(is_closed(s) && is_manifold(s) && volume(s) < 0);
+    isosurface_tetra(s, g, sphere, -1.0);
+    CHECK(is_closed(s) && is_manifold(s) && volume(s) > 0);
   }
   {
     Geometrium geo;
     Surface& s = geo.new_surface();
     bool threw = false;
-    try { isosurface_cartesian(s, { 1, 2, 2, 0, 1, 0, 1, 0, 1 }, sphere, 1.0); }
+    try { isosurface_cartesian(s, { 1, 2, 2, 0, 1, 0, 1, 0, 1 }, sphere, -1.0); }
     catch (const std::invalid_argument&) { threw = true; }
     CHECK(threw && s.face_number() == 0);
   }
@@ -761,6 +765,14 @@ static void test_tessellate()
       for (int j = i + 1; j < 4; ++j)
         if (distance(0.5 * (g.vertex(t.v[i]).p + g.vertex(t.v[j]).p), g.vertex(v).p) < 1e-15) { sum = (i + j) / 2.; ++k; }
     CHECK(k == 1 && w[v] == sum);
+  }
+
+  // The default split is the midpoint: a tessellated cube stays a cube.
+  {
+    Geometrium c;
+    Surface& cube = box(c, { 0, 0, 0 }, { 1, 1, 1 });
+    tessellate(cube);
+    CHECK(cube.face_number() == 48 && std::abs(area(cube) - 6) < 1e-14 && std::abs(volume(cube) - 1) < 1e-14);
   }
 
   // A face of another surface on an edge of s is split in two at the same
@@ -1001,6 +1013,90 @@ static void test_fixes()
     s.add_face(g.add_face(ab, bc, ca));
     const VertexId m = g.collapse_edge(ab, { 0.5, 0, 0 });
     CHECK(m.valid() && count(g.edges_of(m)) == 2 && s.face_number() == 1);
+  }
+
+  // Edges of equal cost are taken in an order that does not depend on the
+  // order of the faces: a symmetric sphere, with its faces given in reverse,
+  // coarsens and refines to the same vertices.
+  {
+    auto reversed_copy = [](const Surface& s, Geometrium& h) -> Surface& {
+      const Geometrium& g = s.geometrium();
+      Surface& r = h.new_surface();
+      std::vector<FaceId> faces(s.faces().begin(), s.faces().end());
+      std::vector<VertexId> vmap(g.vertex_capacity());
+      std::vector<EdgeId> emap(g.edge_capacity());
+      for (auto it = faces.rbegin(); it != faces.rend(); ++it)
+      {
+        std::array<EdgeId, 3> fe;
+        for (int k = 0; k < 3; ++k)
+        {
+          const EdgeId e = g.face(*it).e[2 - k];
+          if ( ! emap[e.i].valid())
+          {
+            for (VertexId v : g.edge(e).v)
+              if ( ! vmap[v.i].valid()) vmap[v.i] = h.add_vertex(g.vertex(v).p);
+            emap[e.i] = h.add_edge(vmap[g.edge(e).v[1].i], vmap[g.edge(e).v[0].i]);
+          }
+          fe[k] = emap[e.i];
+        }
+        r.add_face(h.add_face(fe[0], fe[1], fe[2]));
+      }
+      return r;
+    };
+    auto points = [](const Surface& s) {
+      std::vector<std::array<double, 3>> p;
+      for (VertexId v : s.vertices()) { const Vec3 x = s.geometrium().vertex(v).p; p.push_back({ x.x, x.y, x.z }); }
+      std::sort(p.begin(), p.end());
+      return p;
+    };
+    Geometrium g1, g2, g3, g4;
+    Surface& a = generate_sphere(g1.new_surface(), 3);
+    Surface& b = reversed_copy(a, g2);
+    coarsen(a, stop_below_edges(200));
+    coarsen(b, stop_below_edges(200));
+    CHECK(a.edge_number() == b.edge_number() && points(a) == points(b));
+    Surface& c = generate_sphere(g3.new_surface(), 2);
+    Surface& d = reversed_copy(c, g4);
+    refine(c, [](double, std::size_t n) { return n > 600; });
+    refine(d, [](double, std::size_t n) { return n > 600; });
+    CHECK(c.edge_number() == d.edge_number() && points(c) == points(d));
+  }
+
+  // The mean curvature has a sign: positive on a sphere whose faces face
+  // outwards, negative once they are reverted, and then both principal
+  // curvatures are negative.
+  {
+    Geometrium g;
+    Surface& s = generate_sphere(g.new_surface(), 4);
+    const VertexId v = *s.vertices().begin();
+    const auto h = mean_curvature(s, v);
+    const auto k = gaussian_curvature(s, v);
+    CHECK(h && k && std::abs(*h - 1) < 0.02);
+    for (FaceId f : s.faces()) g.revert_face(f);
+    const auto hr = mean_curvature(s, v);
+    CHECK(hr && std::abs(*hr + *h) < 1e-12);
+    const auto [k1, k2] = principal_curvatures(*hr, *k);
+    CHECK(k1 < 0 && k2 < 0 && k1 >= k2);
+  }
+
+  // On a tetrahedron the normals around an edge's ends sum to rounding
+  // noise. That row is dropped as nearly zero for its terms' size, at any
+  // scale; GTS took its direction as a constraint and put the vertex some
+  // 1e15 away.
+  for (double scale : { 1.0, 1e-3, 1e3 })
+  {
+    Geometrium g;
+    Surface& s = g.new_surface();
+    const VertexId v0 = g.add_vertex(scale * Vec3{ 0.1, 0.2, 0.3 }), v1 = g.add_vertex(scale * Vec3{ 1.3, 0.1, 0.2 });
+    const VertexId v2 = g.add_vertex(scale * Vec3{ 0.2, 1.1, 0.4 }), v3 = g.add_vertex(scale * Vec3{ 0.3, 0.2, 1.7 });
+    const EdgeId e01 = g.add_edge(v0, v1), e02 = g.add_edge(v0, v2), e03 = g.add_edge(v0, v3);
+    const EdgeId e12 = g.add_edge(v1, v2), e13 = g.add_edge(v1, v3), e23 = g.add_edge(v2, v3);
+    s.add_face(g.add_face(e02, e12, e01));
+    s.add_face(g.add_face(e01, e13, e03));
+    s.add_face(g.add_face(e03, e23, e02));
+    s.add_face(g.add_face(e12, e23, e13));
+    const Vec3 p = volume_optimized_vertex(g, e01);
+    CHECK(distance(p, scale * Vec3{ 0.475, 0.4, 0.65 }) < 1e-9 * scale);
   }
 
   // A comment at the end of a line ends the line.

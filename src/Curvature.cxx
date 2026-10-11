@@ -211,6 +211,17 @@ std::optional<Vec3> mean_curvature_normal(const Surface& s, VertexId v)
   return Vec3{ kh[0]/(2*area), kh[1]/(2*area), kh[2]/(2*area) };
 }
 
+std::optional<double> mean_curvature(const Surface& s, VertexId v)
+{
+  const std::optional<Vec3> kh = mean_curvature_normal(s, v);
+  if ( ! kh) return std::nullopt;
+  const Geometrium& g = s.geometrium();
+  Vec3 n = {};
+  for (FaceId f : vertex_faces(s, v)) n = n + g.normal(f);
+  const double h = norm(*kh) / 2;
+  return dot(*kh, n) > 0 ? - h : h;
+}
+
 std::optional<double> gaussian_curvature(const Surface& s, VertexId v)
 {
   const Geometrium& g = s.geometrium();

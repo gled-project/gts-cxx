@@ -13,6 +13,7 @@
 
 #include "gts/Geometrium.h"
 
+#include <array>
 #include <cstddef>
 #include <functional>
 
@@ -23,21 +24,27 @@ using EdgeCost  = std::function<double(const Geometrium&, EdgeId)>;
 // edges after it is split; returns true to stop.
 using RefineStop = std::function<bool(double cost, std::size_t n_edges)>;
 
+// The order in which refine() and coarsen() take edges of equal cost: by
+// midpoint, then by the lower end, both compared x first. It does not depend
+// on the order of the faces.
+std::array<double, 6> edge_order_key(const Geometrium& g, EdgeId e);
+
 // gts_segment_midvertex: the vertex at the middle of e.
 VertexId midvertex(Geometrium& g, EdgeId e);
 // The middle of e, projected onto the unit sphere.
 VertexId unit_sphere_arc_midvertex(Geometrium& g, EdgeId e);
 
 // gts_surface_tessellate: splits every face of s into four, splitting each
-// edge once with split (by default unit_sphere_arc_midvertex). A face of
-// another surface on a split edge is split in two at the same vertex.
+// edge once with split (by default midvertex). A face of another surface on
+// a split edge is split in two at the same vertex.
 void tessellate(Surface& s, const Splitter& split = {});
 
 // gts_surface_refine: splits the edges of s in the order of cost, smallest
 // first, until stop returns true. Splitting an edge splits each face on it
-// into two; the new edges join the order. The default cost is minus the
-// squared length, which splits the longest edges first; the default split
-// is midvertex.
+// into two; the new edges join the order. Edges of equal cost are taken in
+// the order of edge_order_key(). The default cost is minus the squared
+// length, which splits the longest edges first; the default split is
+// midvertex.
 void refine(Surface& s, const RefineStop& stop, const EdgeCost& cost = {}, const Splitter& split = {});
 
 // gts_surface_generate_sphere: adds to s a unit sphere made from an

@@ -23,13 +23,21 @@ namespace gts {
 // where v's faces have no area or do not form an oriented fan.
 std::optional<Vec3> mean_curvature_normal(const Surface& s, VertexId v);
 
+// The mean curvature at v, half the length of the mean curvature normal,
+// positive where the normal points against the faces around v, as on a
+// sphere whose faces face outwards, and negative where it points with them.
+// None where mean_curvature_normal() gives none.
+std::optional<double> mean_curvature(const Surface& s, VertexId v);
+
 // gts_vertex_gaussian_curvature: the Gaussian curvature Kg at v. None at a
 // boundary vertex, or where v's faces have no area or do not form an
 // oriented fan.
 std::optional<double> gaussian_curvature(const Surface& s, VertexId v);
 
-// gts_vertex_principal_curvatures: K1 and K2 from the mean curvature Kh, a
-// scalar (half the length of the mean curvature normal), and Kg.
+// gts_vertex_principal_curvatures: K1 and K2, K1 >= K2, from the mean
+// curvature Kh and the Gaussian curvature Kg. With Kh from mean_curvature(),
+// both are negative where the surface is concave. GTS's callers passed half
+// the length of the mean curvature normal, without a sign.
 std::pair<double, double> principal_curvatures(double kh, double kg);
 
 // gts_vertex_principal_directions: the principal directions e1 and e2 at v,

@@ -1,7 +1,7 @@
 # Cases where costs tie and GTS chooses between the tied edges by the order
 # of its face hash table, which follows memory addresses. The C library gives
 # different results from run to run on these cases without "setarch -R", and
-# the C++ library chooses differently again. compare.py does not count their
+# the C++ library chooses by edge_order_key(), by geometry. compare.py does not count their
 # summaries as differences; compare.sh instead checks that the two surfaces
 # are within MAX_DISTANCE of each other both ways (gts_surface_distance),
 # a tenth of the mean edge length of the result.
@@ -11,6 +11,10 @@
 coarsen-sphere5-volume-number-1000      0.02
 coarsen-iso-torus-length-cost-0.0625    0.008
 coarsen-iso-torus-length-then-angle     0.008
+
+# All edges of a cube have the same length; both results are triangulations
+# of the cube.
+refine-cube-length-number-200           1e-12
 
 # The boolean cases below have no exact degeneracy, but the faces cut by the
 # intersection curve are triangulated by ear clipping from the start of

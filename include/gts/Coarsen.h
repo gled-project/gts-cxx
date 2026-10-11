@@ -53,8 +53,9 @@ Vec3 midpoint(const Geometrium& g, EdgeId e);
 // smallest first, until stop returns true. An edge that is not collapsible,
 // or whose collapse would fold the surface by more than min_angle (in
 // radians), goes to the end of the order. After a collapse, the costs of the
-// edges within two edges of the new vertex are recomputed. The default cost
-// is the squared length, the default position the midpoint.
+// edges within two edges of the new vertex are recomputed. Edges of equal
+// cost are taken in the order of edge_order_key(). The default cost is the
+// squared length, the default position the midpoint.
 void coarsen(Surface& s, const CoarsenStop& stop, const EdgeCost& cost = {},
              const CollapsePosition& position = {}, double min_angle = 0.);
 

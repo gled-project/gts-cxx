@@ -14,6 +14,7 @@
 #endif
 
 #include <cmath>
+#include <tuple>
 #include <stdexcept>
 #include <vector>
 
@@ -22,6 +23,13 @@ namespace gts {
 //==============================================================================
 // Splitting functions
 //==============================================================================
+
+std::array<double, 6> edge_order_key(const Geometrium& g, EdgeId e)
+{
+  const Segment x = g.segment(e);
+  const Vec3 lo = std::tie(x.a.x, x.a.y, x.a.z) < std::tie(x.b.x, x.b.y, x.b.z) ? x.a : x.b;
+  return { (x.a.x + x.b.x) / 2, (x.a.y + x.b.y) / 2, (x.a.z + x.b.z) / 2, lo.x, lo.y, lo.z };
+}
 
 VertexId midvertex(Geometrium& g, EdgeId e)
 {
@@ -47,7 +55,7 @@ VertexId unit_sphere_arc_midvertex(Geometrium& g, EdgeId e)
 void tessellate(Surface& s, const Splitter& split)
 {
   Geometrium& g = s.geometrium();
-  const Splitter& sp = split ? split : Splitter(unit_sphere_arc_midvertex);
+  const Splitter& sp = split ? split : Splitter(midvertex);
   const std::vector<FaceId> faces(s.faces().begin(), s.faces().end());
   SplitMemo memo;
   for (FaceId f : faces)
@@ -59,11 +67,12 @@ void refine(Surface& s, const RefineStop& stop, const EdgeCost& cost, const Spli
 {
   Geometrium& g = s.geometrium();
   const Splitter& sp = split ? split : Splitter(midvertex);
+  auto order = [&](EdgeId e) { return edge_order_key(g, e); };
   EHeap<EdgeId> heap;
   if (cost)
-    heap = EHeap<EdgeId>([&](EdgeId e) { return cost(g, e); });
+    heap = EHeap<EdgeId>([&](EdgeId e) { return cost(g, e); }, order);
   else
-    heap = EHeap<EdgeId>([&](EdgeId e) { const Segment x = g.segment(e); return - distance2(x.a, x.b); });
+    heap = EHeap<EdgeId>([&](EdgeId e) { const Segment x = g.segment(e); return - distance2(x.a, x.b); }, order);
 
   heap.freeze();
   for (EdgeId e : s.edges()) heap.insert(e);
@@ -165,7 +174,7 @@ Surface& generate_sphere(Surface& s, unsigned order)
     throw std::invalid_argument("gts::generate_sphere: the order must be at least 1");
   generate_icosahedron(s);
   for (unsigned i = 1; i < order; ++i)
-    tessellate(s);
+    tessellate(s, unit_sphere_arc_midvertex);
   return s;
 }
 

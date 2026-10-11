@@ -27,7 +27,8 @@ crashed. --classify DIR takes the sos_ties lines from the summaries in DIR,
 for comparisons where CXXDIR holds summaries the C library made of the C++
 surfaces.
 
-Cases listed in fixed.txt are those where gts-cxx fixes an error of GTS.
+Cases listed in fixed.txt are those where gts-cxx fixes an error of GTS,
+or departs from it on purpose.
 A difference there is not counted; the check given in fixed.txt must pass
 instead.
 
@@ -99,6 +100,13 @@ def check_fixed(check, r, c, diff_keys):
         if not c.get("status", "").startswith("ok"):
             return f"C++ status {c.get('status')}"
         return None if valid(c) else "C++ result not closed, manifold and orientable"
+    if kind == "reversed":
+        bad = [k for k in diff_keys if k != "volume"]
+        if bad:
+            return f"{len(bad)} lines other than the volume differ, as {bad[0]}"
+        if "volume" in diff_keys and not close(r["volume"], str(-float(c["volume"])), 1e-9):
+            return f"volume C {r['volume']} is not minus C++ {c['volume']}"
+        return None
     if kind == "lines":
         want_r, _, want_c = (x.strip() for x in arg.partition("|"))
         bad = [k for k in diff_keys if (r.get(k), c.get(k)) != (want_r, want_c)]

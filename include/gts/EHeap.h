@@ -2,7 +2,9 @@
 // GtsEHeap. Elements keep their place in the heap through handles, for
 // remove() and decrease_key(). The heap's layout follows GtsEHeap's exactly,
 // so that elements with equal keys come off in the same order as in GTS for
-// the same sequence of operations. GtsEHeap's randomized mode is not ported.
+// the same sequence of operations. With a tie function, elements with equal
+// keys come off in the order of their tie keys instead, whatever the order
+// they went in. GtsEHeap's randomized mode is not ported.
 //
 // Copyright (C) 1999 Stéphane Popinet (GTS: eheap.c)
 // Copyright (C) 2026 Matevz Tadel
@@ -11,6 +13,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -25,8 +28,12 @@ class EHeap
 public:
   using Handle  = std::uint32_t;
   using KeyFunc = std::function<double(const T&)>;
+  using TieKey  = std::array<double, 6>;
+  using TieFunc = std::function<TieKey(const T&)>;
 
-  explicit EHeap(KeyFunc key = {}) : m_key(std::move(key)) {}
+  // tie, if given, orders elements with equal keys; their tie keys are
+  // taken when they are inserted.
+  explicit EHeap(KeyFunc key = {}, TieFunc tie = {}) : m_key(std::move(key)), m_tie(std::move(tie)) {}
 
   // Inserts p with the key from the key function, or with the given key.
   Handle insert(T p) { const double k = m_key(p); return insert(std::move(p), k); }
@@ -65,7 +72,10 @@ private:
     T             data;
     double        key;
     std::uint32_t pos; // 1-based position in m_heap
+    TieKey        tie;
   };
+
+  bool less(const Pair& a, const Pair& b) const { return a.key < b.key || (m_tie && a.key == b.key && a.tie < b.tie); }
 
   Pair& at(std::uint32_t pos) { return m_pairs[m_heap[pos - 1]]; }
   void  place(std::uint32_t pos, Handle h) { m_heap[pos - 1] = h; m_pairs[h].pos = pos; }
@@ -76,6 +86,7 @@ private:
   void sift_down(std::uint32_t i);
 
   KeyFunc             m_key;
+  TieFunc             m_tie;
   std::vector<Pair>   m_pairs;
   std::vector<Handle> m_free;
   std::vector<Handle> m_heap;
@@ -86,8 +97,9 @@ template <class T>
 typename EHeap<T>::Handle EHeap<T>::insert(T p, double key)
 {
   Handle h;
-  if (m_free.empty()) { h = Handle(m_pairs.size()); m_pairs.push_back({ std::move(p), key, 0 }); }
-  else                { h = m_free.back(); m_free.pop_back(); m_pairs[h] = { std::move(p), key, 0 }; }
+  const TieKey tie = m_tie ? m_tie(p) : TieKey{};
+  if (m_free.empty()) { h = Handle(m_pairs.size()); m_pairs.push_back({ std::move(p), key, 0, tie }); }
+  else                { h = m_free.back(); m_free.pop_back(); m_pairs[h] = { std::move(p), key, 0, tie }; }
   m_heap.push_back(h);
   m_pairs[h].pos = std::uint32_t(m_heap.size());
   if ( ! m_frozen) sift_up(std::uint32_t(m_heap.size()));
@@ -98,12 +110,11 @@ template <class T>
 void EHeap<T>::sift_up(std::uint32_t i)
 {
   const Handle child = m_heap[i - 1];
-  const double key = m_pairs[child].key;
   std::uint32_t p;
   while ((p = parent(i)))
   {
     const Handle par = m_heap[p - 1];
-    if (m_pairs[par].key > key)
+    if (less(m_pairs[child], m_pairs[par]))
     {
       place(p, child);
       place(i, par);
@@ -119,15 +130,14 @@ void EHeap<T>::sift_down(std::uint32_t i)
 {
   const std::uint32_t len = std::uint32_t(m_heap.size());
   const Handle par = m_heap[i - 1];
-  const double key = m_pairs[par].key;
   for (;;)
   {
     const std::uint32_t lc = 2 * i, rc = 2 * i + 1;
     if (lc > len) break;
     std::uint32_t c = lc;
-    if (rc <= len && ! (at(lc).key < at(rc).key)) c = rc;
+    if (rc <= len && ! less(at(lc), at(rc))) c = rc;
     const Handle child = m_heap[c - 1];
-    if ( ! (key > m_pairs[child].key)) break;
+    if ( ! less(m_pairs[child], m_pairs[par])) break;
     place(i, child);
     place(c, par);
     i = c;

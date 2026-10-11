@@ -15,14 +15,10 @@ namespace gts {
 
 PlaneFunc sample(std::function<double(Vec3)> f)
 {
-  return [f = std::move(f)](PlaneValues& a, const CartesianGrid& g, unsigned) {
-    double x = g.x;
-    for (unsigned i = 0; i < g.nx; ++i, x += g.dx)
-    {
-      double y = g.y;
-      for (unsigned j = 0; j < g.ny; ++j, y += g.dy)
-        a(i, j) = f({ x, y, g.z });
-    }
+  return [f = std::move(f)](PlaneValues& a, const CartesianGrid& g, unsigned k) {
+    for (unsigned i = 0; i < g.nx; ++i)
+      for (unsigned j = 0; j < g.ny; ++j)
+        a(i, j) = f(grid_point(g, i, j, k));
   };
 }
 
@@ -74,38 +70,38 @@ struct IsoSlice
 
 bool crosses(double v1, double v2) { return (v1 >= 0. && v2 < 0.) || (v1 < 0. && v2 >= 0.); }
 
-// gts_iso_slice_fill_cartesian, with f2 null for the last plane.
-void slice_fill(IsoSlice& s, const CartesianGrid& g, const PlaneValues& f1, const PlaneValues* f2, double iso)
+// gts_iso_slice_fill_cartesian for plane k, with f2, plane k + 1, null for
+// the last plane.
+void slice_fill(IsoSlice& s, const CartesianGrid& g, unsigned k, const PlaneValues& f1, const PlaneValues* f2,
+                double iso)
 {
-  unsigned i, j;
-  double x, y;
   if (f2)
-    for (i = 0, x = g.x; i < g.nx; i++, x += g.dx)
-      for (j = 0, y = g.y; j < g.ny; j++, y += g.dy)
+    for (unsigned i = 0; i < g.nx; i++)
+      for (unsigned j = 0; j < g.ny; j++)
       {
         const double v1 = f1(i, j) - iso, v2 = (*f2)(i, j) - iso;
         Crossing& c = s.at(0, i, j);
         c = {};
         if (crosses(v1, v2))
-          c = { true, v2 >= 0. ? 1 : 0, { x, y, g.z + g.dz * v1 / (v1 - v2) }, {} };
+          c = { true, v2 >= 0. ? 1 : 0, grid_point(g, i, j, k + v1 / (v1 - v2)), {} };
       }
-  for (i = 0, x = g.x; i < g.nx - 1; i++, x += g.dx)
-    for (j = 0, y = g.y; j < g.ny; j++, y += g.dy)
+  for (unsigned i = 0; i < g.nx - 1; i++)
+    for (unsigned j = 0; j < g.ny; j++)
     {
       const double v1 = f1(i, j) - iso, v2 = f1(i + 1, j) - iso;
       Crossing& c = s.at(1, i, j);
       c = {};
       if (crosses(v1, v2))
-        c = { true, v2 >= 0. ? 1 : 0, { x + g.dx * v1 / (v1 - v2), y, g.z }, {} };
+        c = { true, v2 >= 0. ? 1 : 0, grid_point(g, i + v1 / (v1 - v2), j, k), {} };
     }
-  for (i = 0, x = g.x; i < g.nx; i++, x += g.dx)
-    for (j = 0, y = g.y; j < g.ny - 1; j++, y += g.dy)
+  for (unsigned i = 0; i < g.nx; i++)
+    for (unsigned j = 0; j < g.ny - 1; j++)
     {
       const double v1 = f1(i, j) - iso, v2 = f1(i, j + 1) - iso;
       Crossing& c = s.at(2, i, j);
       c = {};
       if (crosses(v1, v2))
-        c = { true, v2 >= 0. ? 1 : 0, { x, y + g.dy * v1 / (v1 - v2), g.z }, {} };
+        c = { true, v2 >= 0. ? 1 : 0, grid_point(g, i, j + v1 / (v1 - v2), k), {} };
     }
 }
 
@@ -160,7 +156,8 @@ void isosurface_slice(Surface& s, IsoSlice& s1, IsoSlice& s2)
           {
             const EdgeId e2 = edge_between(g, va[m]->v, va[m + 1]->v);
             const EdgeId e3 = edge_between(g, va[m + 1]->v, va[0]->v);
-            s.add_face(g.add_face(e1, e2, e3));
+            // Towards f < iso: GTS's order, (e1, e2, e3), reverted.
+            s.add_face(g.add_face(e2, e1, e3));
             e1 = e3;
           }
         }
@@ -200,12 +197,15 @@ void slice_init(Slice& s, double v)
 // helper_t: the vertices made so far, by edge of the grid, for the planes
 // at the bottom (vtop, named so in GTS) and the top (vbot) of the current
 // layer of cubes, and for the edges between them (vmid).
+// off is the index of the grid's first point, 1 in the enlarged grid of the
+// bounded method.
 struct Helper
 {
-  int nx, ny;
+  int nx, ny, off;
   std::vector<VertexId> vtop, vmid, vbot;
 
-  Helper(int nx_, int ny_) : nx(nx_), ny(ny_), vtop(4 * nx * ny), vmid(4 * nx * ny), vbot(4 * nx * ny) {}
+  Helper(int nx_, int ny_, int off_ = 0) :
+    nx(nx_), ny(ny_), off(off_), vtop(4 * nx * ny), vmid(4 * nx * ny), vbot(4 * nx * ny) {}
 
   // helper_advance: the top plane becomes the bottom one.
   void advance()
@@ -238,7 +238,7 @@ VertexId get_vertex(Geometrium& geo, int mz, const TetraVertex& v1, const TetraV
   const std::size_t idx2 = std::size_t(4 * (x + y * h.nx) + index);
   VertexId& v = v1.z == v2.z ? (mz == z ? h.vtop[idx2] : h.vbot[idx2]) : h.vmid[idx2];
   if ( ! v.valid())
-    v = geo.add_vertex({ g.dx * (x + dx) + g.x, g.dy * (y + dy) + g.y, g.dz * (z + dz) + g.z });
+    v = geo.add_vertex(grid_point(g, x - h.off + dx, y - h.off + dy, z - h.off + dz));
   return v;
 }
 
@@ -362,13 +362,11 @@ VertexId get_vertex_bcl(Geometrium& geo, int mz, const TetraVertex& v1, const Te
   auto [it, made] = table.try_emplace(key);
   if (made)
   {
-    const double x1 = g.dx * (v1.x + (v1.mid / 2.0)) + g.x;
-    const double x2 = g.dx * (v2.x + (v2.mid / 2.0)) + g.x;
-    const double y1 = g.dy * (v1.y + (v1.mid / 2.0)) + g.y;
-    const double y2 = g.dy * (v2.y + (v2.mid / 2.0)) + g.y;
-    const double z1 = g.dz * (v1.z + (v1.mid / 2.0)) + g.z;
-    const double z2 = g.dz * (v2.z + (v2.mid / 2.0)) + g.z;
-    it->second = geo.add_vertex({ x1 * (1.0 - d) + d * x2, y1 * (1.0 - d) + d * y2, z1 * (1.0 - d) + d * z2 });
+    // Between the positions of the two corners; a cube centre is half a
+    // step from its corner.
+    const Vec3 p1 = grid_point(g, v1.x + v1.mid / 2.0, v1.y + v1.mid / 2.0, v1.z + v1.mid / 2.0);
+    const Vec3 p2 = grid_point(g, v2.x + v2.mid / 2.0, v2.y + v2.mid / 2.0, v2.z + v2.mid / 2.0);
+    it->second = geo.add_vertex({ p1.x * (1.0 - d) + d * p2.x, p1.y * (1.0 - d) + d * p2.y, p1.z * (1.0 - d) + d * p2.z });
   }
   return it->second;
 }
@@ -468,51 +466,38 @@ void isosurface_cartesian(Surface& s, CartesianGrid g, const PlaneFunc& f, doubl
   PlaneValues* f1 = &fa;
   PlaneValues* f2 = &fb;
 
-  // The steps of g.z are GTS's, so that z rounds as in GTS.
   f(*f1, g, 0);
-  g.z += g.dz;
   f(*f2, g, 1);
-  g.z -= g.dz;
-  slice_fill(*slice1, g, *f1, f2, iso);
-  g.z += g.dz;
-  for (unsigned i = 2; i < g.nz; i++)
+  slice_fill(*slice1, g, 0, *f1, f2, iso);
+  for (unsigned k = 2; k < g.nz; k++)
   {
-    g.z += g.dz;
-    f(*f1, g, i);
+    f(*f1, g, k);
     std::swap(f1, f2);
-    g.z -= g.dz;
-    slice_fill(*slice2, g, *f1, f2, iso);
-    g.z += g.dz;
+    slice_fill(*slice2, g, k - 1, *f1, f2, iso);
     isosurface_slice(s, *slice1, *slice2);
     std::swap(slice1, slice2);
   }
-  slice_fill(*slice2, g, *f2, nullptr, iso);
+  slice_fill(*slice2, g, g.nz - 1, *f2, nullptr, iso);
   isosurface_slice(s, *slice1, *slice2);
 }
 
 void isosurface_tetra(Surface& s, CartesianGrid g, const PlaneFunc& f, double iso)
 {
   check_grid(g, "isosurface_tetra");
-  const CartesianGrid gi = g;
   Slice sa(g.nx, g.ny), sb(g.nx, g.ny);
   Slice* slice1 = &sa;
   Slice* slice2 = &sb;
   Helper helper(int(g.nx), int(g.ny));
 
-  unsigned z = 0;
-  f(*slice1, g, z);
+  f(*slice1, g, 0);
   iso_sub(*slice1, iso);
-  z++;
-  g.z += g.dz;
-  while (z < g.nz)
+  for (unsigned z = 1; z < g.nz; ++z)
   {
     f(*slice2, g, z);
     iso_sub(*slice2, iso);
-    g.z += g.dz;
-    iso_slice_evaluate(*slice1, *slice2, gi, int(z) - 1, s, helper);
+    iso_slice_evaluate(*slice1, *slice2, g, int(z) - 1, s, helper);
     std::swap(slice1, slice2);
     helper.advance();
-    ++z;
   }
 }
 
@@ -525,25 +510,20 @@ void isosurface_tetra_bounded(Surface& s, CartesianGrid g, const PlaneFunc& f, d
   slice_init(*slice1, -1.0);
   Slice transfer(g.nx, g.ny);
 
+  // The enlarged grid: index 0 is the layer, a step before g's first point.
   CartesianGrid gi = g;
-  gi.x -= g.dx;
-  gi.y -= g.dy;
-  gi.z -= g.dz;
   gi.nx = g.nx + 2;
   gi.ny = g.ny + 2;
-  gi.nz = g.nz;
-  Helper helper(int(gi.nx), int(gi.ny));
+  Helper helper(int(gi.nx), int(gi.ny), 1);
 
   unsigned z = 0;
-  while (z < g.nz)
+  for (; z < g.nz; ++z)
   {
     f(transfer, g, z);
-    g.z += g.dz;
     copy_to_bounded(*slice2, transfer, iso, -1.);
     iso_slice_evaluate(*slice1, *slice2, gi, int(z), s, helper);
     std::swap(slice1, slice2);
     helper.advance();
-    ++z;
   }
   slice_init(*slice2, -1.0);
   iso_slice_evaluate(*slice1, *slice2, gi, int(z), s, helper);
@@ -552,36 +532,29 @@ void isosurface_tetra_bounded(Surface& s, CartesianGrid g, const PlaneFunc& f, d
 void isosurface_tetra_bcl(Surface& s, CartesianGrid g, const PlaneFunc& f, double iso)
 {
   check_grid(g, "isosurface_tetra_bcl");
-  const CartesianGrid gi = g;
   Slice sa(g.nx, g.ny), sb(g.nx, g.ny), sc(g.nx, g.ny);
   Slice* slice1 = &sa;
   Slice* slice2 = &sb;
   Slice* slice3 = &sc;
   HelperBcl helper;
 
-  unsigned z = 0;
-  f(*slice1, g, z);
+  f(*slice1, g, 0);
   iso_sub(*slice1, iso);
-  z++;
-  g.z += g.dz;
-  f(*slice2, g, z);
+  f(*slice2, g, 1);
   iso_sub(*slice2, iso);
-  z++;
-  g.z += g.dz;
-  while (z < g.nz)
+  unsigned z = 2;
+  for (; z < g.nz; ++z)
   {
     f(*slice3, g, z);
     iso_sub(*slice3, iso);
-    g.z += g.dz;
-    iso_slice_evaluate_bcl(*slice1, *slice2, slice3, gi, int(z) - 2, s, helper);
+    iso_slice_evaluate_bcl(*slice1, *slice2, slice3, g, int(z) - 2, s, helper);
     Slice* hs = slice1;
     slice1 = slice2;
     slice2 = slice3;
     slice3 = hs;
     helper.advance();
-    ++z;
   }
-  iso_slice_evaluate_bcl(*slice1, *slice2, nullptr, gi, int(z) - 2, s, helper);
+  iso_slice_evaluate_bcl(*slice1, *slice2, nullptr, g, int(z) - 2, s, helper);
 }
 
 } // namespace gts

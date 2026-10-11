@@ -46,16 +46,17 @@ struct Constraints
   unsigned n = 0;
 };
 
-// gts_matrix_compatible_row: adds the row A1 x = b1 unless it is zero or
-// nearly dependent on the rows already there (within 1 degree). The test
-// for a zero row is GTS's; see QUIRKS.md.
-void compatible_row(Constraints& c, V3 A1, double b1)
+// gts_matrix_compatible_row: adds the row A1 x = b1 unless it is nearly
+// zero, no longer than 1e-12 of scale, the size of the terms it was summed
+// from, or nearly dependent on the rows already there (within 1 degree).
+void compatible_row(Constraints& c, V3 A1, double b1, double scale)
 {
   constexpr double kCosAlpha2 = 0.999695413509;   // alpha = 1 degree
   constexpr double kSinAlpha2 = 3.04586490453e-4; // alpha = 1 degree
+  constexpr double kZero      = 1e-12;
 
   double na1 = scalar(A1, A1);
-  if (na1 == 0.0)
+  if (na1 <= kZero * kZero * scale * scale)
     return;
 
   na1 = std::sqrt(na1);
@@ -80,15 +81,17 @@ void compatible_row(Constraints& c, V3 A1, double b1)
 }
 
 // gts_matrix_quadratic_optimization: adds the constraints that minimize
-// x H x / 2 + c x in the space left free by the constraints so far.
-void quadratic_optimization(Constraints& k, const M3& H, const V3& c)
+// x H x / 2 + c x in the space left free by the constraints so far. scale
+// is the size of the terms H was summed from.
+void quadratic_optimization(Constraints& k, const M3& H, const V3& c, double scale)
 {
+  auto length = [](const V3& v) { return std::sqrt(scalar(v, v)); };
   switch (k.n)
   {
     case 0:
-      compatible_row(k, H[0], - c[0]);
-      compatible_row(k, H[1], - c[1]);
-      compatible_row(k, H[2], - c[2]);
+      compatible_row(k, H[0], - c[0], scale);
+      compatible_row(k, H[1], - c[1], scale);
+      compatible_row(k, H[2], - c[2], scale);
       return;
     case 1:
     {
@@ -107,15 +110,15 @@ void quadratic_optimization(Constraints& k, const M3& H, const V3& c)
       }
       // A second one, orthogonal to the first and to the constraint.
       const V3 Q1 = cross(a, Q0);
-      compatible_row(k, { scalar(Q0, H[0]), scalar(Q0, H[1]), scalar(Q0, H[2]) }, - scalar(Q0, c));
-      compatible_row(k, { scalar(Q1, H[0]), scalar(Q1, H[1]), scalar(Q1, H[2]) }, - scalar(Q1, c));
+      compatible_row(k, { scalar(Q0, H[0]), scalar(Q0, H[1]), scalar(Q0, H[2]) }, - scalar(Q0, c), length(Q0) * scale);
+      compatible_row(k, { scalar(Q1, H[0]), scalar(Q1, H[1]), scalar(Q1, H[2]) }, - scalar(Q1, c), length(Q1) * scale);
       return;
     }
     case 2:
     {
       // A vector orthogonal to both constraints.
       const V3 Q = cross(k.A[0], k.A[1]);
-      compatible_row(k, { scalar(Q, H[0]), scalar(Q, H[1]), scalar(Q, H[2]) }, - scalar(Q, c));
+      compatible_row(k, { scalar(Q, H[0]), scalar(Q, H[1]), scalar(Q, H[2]) }, - scalar(Q, c), length(Q) * scale);
       return;
     }
     default:
@@ -223,6 +226,7 @@ struct Boundary
 {
   V3 e1{}, e2{}, cb{};
   M3 Hb{};
+  double length = 0; // of the edges summed into e1
 };
 
 void boundary_preservation(const Geometrium& g, EdgeId edge, FaceId f, Boundary& B)
@@ -230,6 +234,7 @@ void boundary_preservation(const Geometrium& g, EdgeId edge, FaceId f, Boundary&
   const auto [p1, p2] = boundary_ends(g, edge, f);
   const V3 e = { p2.x - p1.x, p2.y - p1.y, p2.z - p1.z };
   B.e1[0] += e[0]; B.e1[1] += e[1]; B.e1[2] += e[2];
+  B.length += std::sqrt(scalar(e, e));
 
   const V3 e3 = { p2.y * p1.z - p2.z * p1.y, p2.z * p1.x - p2.x * p1.z, p2.x * p1.y - p2.y * p1.x };
   B.e2[0] += e3[0]; B.e2[1] += e3[1]; B.e2[2] += e3[2];
@@ -290,7 +295,7 @@ Vec3 volume_optimized_vertex(const Geometrium& g, EdgeId edge, const VolumeOptim
                    V3{ - e1[0] * e1[1], e1[2] * e1[2] + e1[0] * e1[0], - e1[1] * e1[2] },
                    V3{ - e1[0] * e1[2], - e1[1] * e1[2], e1[1] * e1[1] + e1[0] * e1[0] } };
     const V3 c = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0] };
-    quadratic_optimization(k, H, c);
+    quadratic_optimization(k, H, c, B.length * B.length);
   }
 
   // Volume preservation.
@@ -298,15 +303,17 @@ Vec3 volume_optimized_vertex(const Geometrium& g, EdgeId edge, const VolumeOptim
   double sn11 = 0., sn22 = 0., sn33 = 0.;
   double sn12 = 0., sn13 = 0., sn23 = 0.;
   double st = 0., stn1 = 0., stn2 = 0., stn3 = 0.;
+  double sabs = 0.;
   for (FaceId t : vertex_triangles(g, v1, v2))
   {
     const auto [n1, n2, n3, nt] = triangle_normal(g, t);
     sn1 += n1; sn2 += n2; sn3 += n3;
+    sabs += std::sqrt(n1 * n1 + n2 * n2 + n3 * n3);
     sn11 += n1 * n1; sn22 += n2 * n2; sn33 += n3 * n3;
     sn12 += n1 * n2; sn13 += n1 * n3; sn23 += n2 * n3;
     st += nt; stn1 += nt * n1; stn2 += nt * n2; stn3 += nt * n3;
   }
-  compatible_row(k, { sn1, sn2, sn3 }, st);
+  compatible_row(k, { sn1, sn2, sn3 }, st, sabs);
 
   // Volume and boundary optimization, weighted.
   if (k.n < 3)
@@ -322,7 +329,8 @@ Vec3 volume_optimized_vertex(const Geometrium& g, EdgeId edge, const VolumeOptim
           H[i][j] = params.volume_weight * H[i][j] + le * B.Hb[i][j];
         c[i] = params.volume_weight * c[i] + le * B.cb[i];
       }
-    quadratic_optimization(k, H, c);
+    // H is a sum of positive semi-definite terms: its trace is their size.
+    quadratic_optimization(k, H, c, H[0][0] + H[1][1] + H[2][2]);
   }
 
   // Triangle shape optimization.
@@ -338,7 +346,7 @@ Vec3 volume_optimized_vertex(const Geometrium& g, EdgeId edge, const VolumeOptim
         c[0] -= p.x; c[1] -= p.y; c[2] -= p.z;
       }
     const M3 H = { V3{ nv, 0., 0. }, V3{ 0., nv, 0. }, V3{ 0., 0., nv } };
-    quadratic_optimization(k, H, c);
+    quadratic_optimization(k, H, c, 3 * nv);
   }
 
   return solve(k);
@@ -400,11 +408,12 @@ void coarsen(Surface& s, const CoarsenStop& stop, const EdgeCost& cost, const Co
   Geometrium& g = s.geometrium();
   const CollapsePosition& pos = position ? position : CollapsePosition(midpoint);
   using Heap = EHeap<EdgeId>;
+  auto order = [&](EdgeId e) { return edge_order_key(g, e); };
   Heap heap;
   if (cost)
-    heap = Heap([&](EdgeId e) { return cost(g, e); });
+    heap = Heap([&](EdgeId e) { return cost(g, e); }, order);
   else
-    heap = Heap([&](EdgeId e) { const Segment x = g.segment(e); return distance2(x.a, x.b); });
+    heap = Heap([&](EdgeId e) { const Segment x = g.segment(e); return distance2(x.a, x.b); }, order);
 
   // The heap handle of each edge, as GTS kept it in the edge's reserved
   // pointer. Collapses make no edges, so the size stays.

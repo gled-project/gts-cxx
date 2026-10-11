@@ -46,25 +46,34 @@ private:
   std::vector<double> m_v;
 };
 
-// Fills values with the function on plane k of the grid, which is at z = g.z.
+// The point of g at indices i, j, k, which may be fractional: g.x + i * g.dx
+// and so on. The methods compute every position so, grid points and
+// crossings alike.
+inline Vec3 grid_point(const CartesianGrid& g, double i, double j, double k)
+{
+  return { g.x + g.dx * i, g.y + g.dy * j, g.z + g.dz * k };
+}
+
+// Fills values with the function on plane k of g, whose point (i, j) is
+// grid_point(g, i, j, k).
 using PlaneFunc = std::function<void(PlaneValues& values, const CartesianGrid& g, unsigned k)>;
 
-// A PlaneFunc that evaluates f at each point of the plane, stepping through
-// it by adding dx and dy; see QUIRKS.md.
+// A PlaneFunc that evaluates f at each point of the plane.
 PlaneFunc sample(std::function<double(Vec3)> f);
 
-// gts_isosurface_cartesian: marching cubes, slice by slice. Adds to s the
-// faces of the surface f = iso. The faces are oriented towards f > iso.
+// The four methods add to s the faces of the surface f = iso, oriented
+// towards f < iso: f > iso is the inside, as for a potential. For a
+// function that grows outwards, such as a distance, negate f and iso.
+
+// gts_isosurface_cartesian: marching cubes, slice by slice.
 void isosurface_cartesian(Surface& s, CartesianGrid g, const PlaneFunc& f, double iso);
 
 // gts_isosurface_tetra: each cube of the grid split into five tetrahedra.
-// The faces are oriented towards f < iso, which is the opposite of
-// isosurface_cartesian and of GTS's documentation; see QUIRKS.md.
 void isosurface_tetra(Surface& s, CartesianGrid g, const PlaneFunc& f, double iso);
 
 // gts_isosurface_tetra_bounded: isosurface_tetra on the grid extended by a
-// layer of points with f - iso = -1 on each side, a grid step beyond it,
-// which closes the surface where it leaves the grid; see QUIRKS.md.
+// layer of points with f - iso = -1, outside, on each side, a grid step
+// beyond it, which closes the surface where it leaves the grid.
 void isosurface_tetra_bounded(Surface& s, CartesianGrid g, const PlaneFunc& f, double iso);
 
 // gts_isosurface_tetra_bcl: the body-centred variant, with tetrahedra

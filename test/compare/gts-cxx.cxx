@@ -448,7 +448,7 @@ int main(int argc, char* argv[])
     // As GTSurf::Tessellate's mid-edge splitter: a + 0.5 (b - a).
     const Splitter mid_edge = [](Geometrium& g, EdgeId e) { return g.interpolate_vertex(g.edge(e).v[0], g.edge(e).v[1], 0.5); };
     for (unsigned long n = std::strtoul(a[1], nullptr, 10); n > 0; --n)
-      tessellate(*s, mid ? mid_edge : Splitter());
+      tessellate(*s, mid ? Splitter(mid_edge) : Splitter(unit_sphere_arc_midvertex)); // GTS's default
   }
   else if (cmd == "bool" && a.size() == 3)
   {

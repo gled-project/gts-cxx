@@ -8,7 +8,8 @@ port had to depart from GTS, or chose to, the departure is listed too.
 The entries are in four groups. Fixed: errors of GTS that gts-cxx no longer
 has. Errors: errors of GTS that gts-cxx still has. Choices: behaviour that
 is consistent but may be changed, to be decided. Kept: behaviour that stays.
-Nothing under Choices is decided until it is taken up.
+Nothing under Choices is decided until it is taken up. Departures, at the
+end, list where gts-cxx does otherwise than GTS on purpose.
 
 ## Fixed
 
@@ -76,42 +77,7 @@ None known.
 
 ## Choices
 
-- Refinement and coarsening fill their edge heap in the order of GTS's face
-  hash table, which follows memory addresses. Where costs tie, the result
-  then changes from run to run (see `test/compare/ties.txt`). gts-cxx fills
-  the heap in face index order, so it is repeatable, but it chooses
-  differently from GTS. A tie-break by geometry, such as by the edge's
-  midpoint, would make the result independent of the order of the input
-  too.
-- `isosurface_tetra()` and its two variants orient the faces towards
-  f < iso. `isosurface_cartesian()`, and GTS's documentation of all four,
-  orient them towards f > iso. A sphere from the tetrahedra has negative
-  volume. GledGTS's `GTSIsoMaker` inverts the tetra surfaces
-  (`bInvertTetra`).
-- The layer of `isosurface_tetra_bounded()` marks as outside the side where
-  f - iso < 0, which is the inside for a function that grows outwards, such
-  as the squared distance from a centre. The surface of such a function
-  then gets a second sheet round the grid. The layer lies a grid step
-  beyond the grid.
-- `tessellate()` without a splitting function projects every new vertex
-  onto the unit sphere, as GTS's `gts_surface_tessellate` does. A cube
-  tessellated this way becomes a rough sphere. The default suits only
-  `generate_sphere()`.
-- `gts_matrix_compatible_row()` drops a constraint row only when it is
-  exactly zero. melowntech's GTS changed the test to `|row|^2 < 1e-12`
-  against instabilities when the row is nearly zero. That threshold is
-  absolute, and for a mesh a few centimetres across measured in metres,
-  valid rows are of that size. A threshold relative to the scale of the
-  faces around the edge would serve both.
-- `sample()` steps through a plane by adding dx and dy, as GledGTS's
-  `GTSIsoMaker` did, and the cartesian method steps z by adding and
-  subtracting dz. The tetrahedra methods compute positions as
-  x0 + dx * (i + t). The two kinds of methods put the same grid points at
-  positions that differ in the last bits. Computing every coordinate as
-  x0 + i * dx would be exact to one rounding.
-- `principal_curvatures()` is given half the length of the mean curvature
-  normal, so the mean curvature has no sign, and a concave region gets the
-  same curvatures as the convex one.
+None open.
 
 ## Kept
 
@@ -184,6 +150,46 @@ None known.
 - New faces from `split_edge()` and `split_face4()` join every surface of
   the face they come from. GTS added them only to the surface being
   refined, also for faces of other surfaces on the split edge.
+- All four iso-surface methods orient the faces towards f < iso, so that
+  f > iso is the inside, as for a potential. GTS's tetrahedra methods did
+  so; its `isosurface_cartesian()`, and its documentation of all four,
+  oriented them towards f > iso. A function that grows outwards, such as a
+  distance, is negated together with iso. The layer of
+  `isosurface_tetra_bounded()`, f - iso = -1, is outside in this
+  convention; for a function that grows outwards it would cross the
+  values at the grid's boundary and add a sheet round the grid.
+- Refinement and coarsening take edges of equal cost in the order of
+  `edge_order_key()`: by midpoint, then by the lower end. GTS took them in
+  the order its edge heap was filled, which followed its face hash table
+  and so memory addresses; its results changed from run to run where costs
+  tie (see `test/compare/ties.txt`). gts-cxx's results do not depend on the
+  order of the faces either.
+- The iso-surface methods compute every position with `grid_point()`,
+  x0 + dx * (i + t), from the grid's origin and the indices: the points
+  where the function is sampled, the crossings, and the corners between
+  which the body-centred method interpolates. GTS's callers, as GledGTS,
+  stepped through a plane by adding dx and dy, the methods stepped z by
+  adding and subtracting dz, and the bounded method moved the grid's
+  origin a step out. The same grid point then had positions that differed
+  in the last bits, between methods and between the function's argument
+  and the vertex.
+- `tessellate()` without a splitting function splits each edge at its
+  midpoint. GTS's `gts_surface_tessellate` projected every new vertex onto
+  the unit sphere, which suits only `generate_sphere()`; that passes
+  `unit_sphere_arc_midvertex` now.
+- `mean_curvature()` gives the mean curvature with a sign, from the side the
+  faces around the vertex face, and `principal_curvatures()` takes it. GTS
+  had only the mean curvature normal, and its callers passed half its
+  length to `gts_vertex_principal_curvatures()`, so a concave region got the
+  same curvatures as a convex one.
+- The volume-optimized vertex drops a constraint row when it is no longer
+  than 1e-12 of the size of the terms it was summed from: face normals,
+  boundary edges, or the matrix it is a row of. GTS's
+  `gts_matrix_compatible_row()` dropped it only when exactly zero, and took
+  the direction of rounding noise as a constraint. On an edge of a
+  tetrahedron, whose normals sum to zero, it put the vertex some 1e15 away.
+  melowntech's GTS used an absolute threshold, `|row|^2 < 1e-12`, which
+  does not suit meshes measured in small or large units.
 - `isosurface_cartesian()` makes a vertex where a face first uses a
   crossing. GTS made a vertex at every crossing of the grid when it filled a
   slice, and left those no face used without edges.

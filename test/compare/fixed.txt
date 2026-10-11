@@ -1,11 +1,18 @@
-# Cases where gts-cxx fixes an error of GTS, so the results differ. Each is
-# listed in QUIRKS.md under "Fixed". compare.py does not compare their
+# Cases where gts-cxx fixes an error of GTS, or departs from it on purpose,
+# so the results differ; see QUIRKS.md. compare.py does not compare their
 # summaries with the C library's; it runs the check given here instead.
 #
 # Each line is: NAME  CHECK
 #   valid              the C++ result is closed, manifold and orientable
+#   reversed           only the volume differs, with the opposite sign
 #   lines C | C++      every line that differs reads C in the C summary and
 #                      C++ in the C++ one
+
+# The cartesian method orients the faces towards f < iso, as the tetrahedra
+# do.
+iso-cartesian-sphere        reversed
+iso-cartesian-torus         reversed
+iso-cartesian-blobs         reversed
 
 # The layer round the grid is complete, so the surfaces close.
 iso-tetra_bounded-sphere    valid
