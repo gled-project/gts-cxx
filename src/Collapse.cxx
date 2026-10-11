@@ -8,8 +8,8 @@
 
 #include "gts/Geometrium.h"
 
-#include <algorithm>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace gts {
@@ -298,14 +298,14 @@ VertexId Geometrium::collapse_edge(EdgeId e, Vec3 p, const std::function<void(Ed
     }
     if ( ! m_edges[e1.i].face.valid())
     {
-      // Only with duplicate faces in the surface; see QUIRKS.md.
+      // Only with duplicate faces in the surface.
       if (on_removed_edge) on_removed_edge(e1);
       destroy_edge(e1);
       removed.push_back(e1);
-      if (std::none_of(ring.begin() + i + 1, ring.end(), [&](EdgeId x) { return ! dead(x); }))
-        mid = VertexId();
     }
   }
+  // destroy_edge() marks mid dead when it is left without edges.
+  if (dead(mid)) mid = VertexId();
 
   if ( ! m_collapse_callouts->callouts.empty())
     call(m_collapse_callouts, CollapseEvent{ e, { v1, v2 }, mid, faces, merged, removed });

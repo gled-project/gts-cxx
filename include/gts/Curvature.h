@@ -24,7 +24,8 @@ namespace gts {
 std::optional<Vec3> mean_curvature_normal(const Surface& s, VertexId v);
 
 // gts_vertex_gaussian_curvature: the Gaussian curvature Kg at v. None at a
-// boundary vertex, or where v's faces do not form an oriented fan.
+// boundary vertex, or where v's faces have no area or do not form an
+// oriented fan.
 std::optional<double> gaussian_curvature(const Surface& s, VertexId v);
 
 // gts_vertex_principal_curvatures: K1 and K2 from the mean curvature Kh, a

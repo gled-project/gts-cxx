@@ -293,17 +293,23 @@ public:
   // its opposite vertex. The face keeps one half and a new face takes the
   // other; the new face joins the surfaces of the face it comes from.
   // on_new_edge is called with each new edge as it is made, before it has
-  // faces, which is when refine() computes its cost. Returns the halves, the
-  // one from e's first vertex first.
+  // faces. Returns the halves, the one from e's first vertex first.
   std::array<EdgeId, 2> split_edge(EdgeId e, VertexId m, const std::function<void(EdgeId)>& on_new_edge = {});
 
   // Splits f into four, as GTS's tessellation does: each edge is split at a
   // vertex made by split, unless memo has it split already, and three cuts
   // join the new vertices. f keeps the middle triangle; three new faces take
   // the corners and join the surfaces of f. An edge left without faces is
-  // removed; an edge that other faces still use is kept, beside its halves.
+  // removed; an edge that other faces still use is kept, beside its halves,
+  // until split_remaining().
   void split_face4(FaceId f, const Splitter& split, SplitMemo& memo);
   void split_face4(FaceId f, const Splitter& split) { SplitMemo m; split_face4(f, split, m); }
+
+  // Splits in two, as split_edge() does, the faces still on the edges that
+  // split_face4() split with memo, at the same vertex and halves, so that
+  // they keep sharing the edge with the faces split in four. The old edges
+  // are removed.
+  void split_remaining(SplitMemo& memo);
 
   //--- Collapses --------------------------------------------------------------
 
@@ -527,6 +533,10 @@ private:
 
   // Adds piece to every surface that has parent.
   void join_surfaces(FaceId piece, FaceId parent);
+  // split_edge's cut of each face on e at m; halves[0] runs from e's first
+  // vertex. Removes e and reports es, if given, with the faces.
+  void split_faces(EdgeId e, VertexId m, std::array<EdgeId, 2> halves,
+                   const std::function<void(EdgeId)>& on_new_edge, const EdgeSplitEvent* es);
   // split_face4's handling of one edge, running from a to b.
   struct EdgeHalves { VertexId v; EdgeId from_a, from_b; };
   EdgeHalves split_or_find(EdgeId e, VertexId a, VertexId b, const Splitter& split, SplitMemo& memo,

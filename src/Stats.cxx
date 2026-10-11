@@ -249,9 +249,8 @@ QualityStats quality_stats(const Surface& s)
   {
     const Segment sg = g.segment(e);
     q.edge_length.add(distance(sg.a, sg.b));
-    // All faces on the edge, as GTS takes e->triangles, not only those of s.
     std::vector<FaceId> faces;
-    for (FaceId f : g.faces_of(e)) faces.push_back(f);
+    for (FaceId f : g.faces_of(e)) if (s.contains(f)) faces.push_back(f);
     for (std::size_t i = 0; i < faces.size(); ++i)
       for (std::size_t j = i + 1; j < faces.size(); ++j)
         q.edge_angle.add(std::fabs(g.angle(faces[i], faces[j])));

@@ -244,13 +244,11 @@ static void test_io()
   auto c = read_gts(h, in);
   CHECK(c.has_value() && (*c)->face_number() == 1);
 
-  // A comment at the end of a line swallows its newline, as in GTS, so the
-  // next line is skipped with it. The C library fails on this file with the
-  // same message.
-  std::istringstream trailing("3 3 1\n0 0 0\n1 0 0\n0 1 0 ! trailing\n1 2\n2 3\n3 1\n1 2 3\n");
+  // A comment at the end of a line ends the line; GTS read the next line as
+  // part of it.
+  std::istringstream trailing("3 3 1\n0 0 0\n1 0 0\n0 1 0 ! trailing\n1 2 # edge\n2 3\n3 1\n1 2 3\n");
   auto tr = read_gts(h, trailing);
-  CHECK( ! tr.has_value());
-  if ( ! tr) CHECK(tr.error().message == "expecting an integer (first edge index)");
+  CHECK(tr.has_value() && (*tr)->face_number() == 1);
 
   // An error leaves the Geometrium as it was.
   const std::size_t nv = h.vertex_capacity(), ns = h.surface_number();
@@ -765,8 +763,8 @@ static void test_tessellate()
     CHECK(k == 1 && w[v] == sum);
   }
 
-  // A face of another surface on an edge of s keeps that edge, which s's
-  // faces no longer use.
+  // A face of another surface on an edge of s is split in two at the same
+  // midvertex, so the two surfaces keep sharing the seam.
   Geometrium h;
   Surface& s1 = h.new_surface();
   Surface& s2 = h.new_surface();
@@ -774,9 +772,13 @@ static void test_tessellate()
   const VertexId x = h.add_vertex({1, 1, -1});
   const FaceId outside = h.add_face(u.e[0], h.add_edge(u.v[1], x), h.add_edge(x, u.v[0]));
   s2.add_face(outside);
+  const double a2 = area(s2);
   tessellate(s1, midvertex);
-  CHECK( ! h.dead(u.e[0]) && count(h.faces_of(u.e[0])) == 1 && *h.faces_of(u.e[0]).begin() == outside);
+  CHECK(h.dead(u.e[0]) && s2.face_number() == 2 && std::abs(area(s2) - a2) < 1e-15);
   CHECK(s1.face_number() == 16 && is_closed(s1));
+  unsigned shared = 0;
+  for (EdgeId e : s2.edges()) if (face_number(s1, e) == 2) ++shared;
+  CHECK(shared == 2); // the halves of the old edge
 }
 
 static void test_refine()
@@ -925,6 +927,92 @@ static void test_distance_inside_curvature_merge()
   CHECK(remove_duplicate_faces(w) == 1 && w.face_number() == 1 && remove_duplicate_faces(w) == 0);
 }
 
+// Errors of GTS that gts-cxx fixes; see "Fixed" in QUIRKS.md.
+static void test_fixes()
+{
+  // The bounded and bcl tetrahedra close the surface, also on a grid that
+  // is not square. The sphere crosses the first and the last layer of cubes
+  // in z.
+  const CartesianGrid grid = { 13, 11, 9, -0.75, 0.125, -0.625, 0.125, -0.5, 0.125 };
+  auto ball = sample([](Vec3 p) { return p.x * p.x + p.y * p.y + p.z * p.z; });
+  for (auto method : { isosurface_tetra_bounded, isosurface_tetra_bcl })
+  {
+    Geometrium geo;
+    Surface& s = geo.new_surface();
+    method(s, grid, ball, 0.16);
+    CHECK(s.face_number() > 0 && is_closed(s) && is_manifold(s) && is_orientable(s));
+    CHECK(std::isfinite(area(s)));
+  }
+
+  // refine() costs a new edge once it has its faces.
+  {
+    Geometrium g;
+    Surface& s = g.new_surface();
+    tetrahedron(g, s);
+    unsigned costed = 0, without_faces = 0, splits = 0;
+    refine(s, [&](double, std::size_t) { return splits++ == 10; },
+           [&](const Geometrium& g, EdgeId e) {
+             ++costed;
+             if (face_number(s, e) != 2) ++without_faces;
+             const Segment x = g.segment(e);
+             return - distance2(x.a, x.b);
+           });
+    CHECK(costed > 6 && without_faces == 0);
+  }
+
+  // Edge angles and boundaries are those within the surface.
+  {
+    Geometrium g;
+    Surface& s = g.new_surface();
+    Surface& t = g.new_surface();
+    const Tet a = tetrahedron(g, s);
+    t.add_face(a.f[0]);
+    const VertexId far = g.add_vertex({ 0.3, 0.3, -1 });
+    const EdgeId e1 = g.add_edge(a.v[0], far), e2 = g.add_edge(a.v[1], far);
+    s.add_face(g.add_face(a.e[0], e2, e1)); // a fin on edge 0-1, so it has three faces in s
+    CHECK(quality_stats(t).edge_angle.n == 0);
+
+    Surface& u = g.new_surface();
+    const VertexId w0 = g.add_vertex({ 5, 0, 0 }), w1 = g.add_vertex({ 6, 0, 0 }), w2 = g.add_vertex({ 5, 1, 0 });
+    u.add_face(g.add_face(g.add_edge(w0, w1), g.add_edge(w1, w2), g.add_edge(w2, w0)));
+    // t's edges have faces of s too, but t's single face makes them t's boundary.
+    CHECK(distance(t, u, 0.1).boundary.n > 0);
+  }
+
+  // The ray of is_inside() leaves the box also when the box ends at x = 0.
+  {
+    Geometrium g;
+    const BBTree tree(box(g, { -2, -1, -1 }, { 0, 1, 1 }));
+    CHECK(is_inside(tree, { -1, 0, 0 }) && ! is_inside(tree, { -1, 2, 0 }));
+  }
+
+  // A collapse that leaves an edge without faces, through a duplicate face,
+  // keeps the new vertex while it has other edges. The edges are made so
+  // that the faceless edge comes last in the new vertex's ring.
+  {
+    Geometrium g;
+    Surface& s = g.new_surface();
+    const VertexId a = g.add_vertex({ 0, 0, 0 }), b = g.add_vertex({ 1, 0, 0 }), c = g.add_vertex({ 0.5, 1, 0 });
+    const VertexId d = g.add_vertex({ 2, -1, 0 }), f = g.add_vertex({ 2, 1, 0 });
+    const EdgeId bd = g.add_edge(b, d), df = g.add_edge(d, f), fb = g.add_edge(f, b);
+    const EdgeId ab = g.add_edge(a, b), ca = g.add_edge(c, a), bc = g.add_edge(b, c);
+    s.add_face(g.add_face(bd, df, fb));
+    s.add_face(g.add_face(ab, bc, ca));
+    s.add_face(g.add_face(ab, bc, ca));
+    const VertexId m = g.collapse_edge(ab, { 0.5, 0, 0 });
+    CHECK(m.valid() && count(g.edges_of(m)) == 2 && s.face_number() == 1);
+  }
+
+  // A comment at the end of a line ends the line.
+  {
+    Geometrium g;
+    std::istringstream in("# a closed tetrahedron\n4 6 4\n0 0 0 # origin\n1 0 0\n0 1 0\n0 0 1\n"
+                          "1 2\n1 3\n1 4 ! last edge from 1\n2 3\n2 4\n3 4\n2 4 1\n1 5 3\n3 6 2\n4 6 5\n");
+    auto r = read_gts(g, in);
+    CHECK(r.has_value() && (*r)->face_number() == 4 && is_closed(**r));
+  }
+}
+
 int main()
 {
   std::println("sizeof Vertex {}, Edge {}, Face {}", sizeof(Vertex), sizeof(Edge), sizeof(Face));
@@ -955,6 +1043,7 @@ int main()
   test_small_functions();
   test_cluster();
   test_distance_inside_curvature_merge();
+  test_fixes();
   std::println("{}", g_failed ? "FAILED" : "all passed");
   return g_failed != 0;
 }

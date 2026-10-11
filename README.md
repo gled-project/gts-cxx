@@ -18,10 +18,12 @@ edges, and the removal of duplicate faces.
 
 The port keeps GTS's algorithms and its floating-point arithmetic, so that
 its results can be compared with the C library's; redesigns come later.
+Errors of GTS are fixed one by one, and the comparison checks the cases
+they change.
 
 - `docs/design.md`: the data structures and the primitives.
-- `QUIRKS.md`: where the port keeps odd behaviour of GTS, and where it
-  departs from GTS.
+- `QUIRKS.md`: the errors of GTS that the port fixes and those it still
+  has, odd behaviour it keeps, and where it departs from GTS.
 - `test/README.md`: how the port is tested against the C library, and the
   results.
 
@@ -78,7 +80,7 @@ Geomview (OOGL) and VTK writers.
 
 ```
 COPYING                  LGPL-2.1
-QUIRKS.md                behaviour kept from GTS to improve later, and departures
+QUIRKS.md                fixed and remaining errors of GTS, choices, departures
 docs/design.md           the data structures and the primitives
 Makefile
 include/gts/
@@ -108,6 +110,7 @@ test/compare/
   gts-cxx.cxx            its twin, linked with this library
   cases.txt              the cases
   ties.txt               cases decided by GTS's memory order, compared by distance
+  fixed.txt              cases where gts-cxx fixes GTS, with the check for each
   run-cases.sh           runs all cases through one program
   run-ref.sh             runs them through gts-ref
   compare.sh, compare.py runs both and compares; output in test/compare/out/

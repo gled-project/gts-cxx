@@ -53,8 +53,8 @@ Range edge_distance(const BBTree& tree, const Geometrium& g, EdgeId e, double de
 // face_distance() for each face of s, edge_distance() for each boundary
 // edge, with delta a fraction of the diagonal of tree's box, between 0 and
 // 1. The mean and standard deviation are weighted by area, or by length;
-// n counts the sampled points. A boundary edge is one with a single face
-// in any surface, as in GTS.
+// n counts the sampled points. A boundary edge of s is one with a single
+// face in s.
 Range surface_distance(const BBTree& tree, const Surface& s, double delta,
                        const BBTree::DistanceFunc& d = {});
 Range boundary_distance(const BBTree& tree, const Surface& s, double delta,

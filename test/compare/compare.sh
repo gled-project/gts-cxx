@@ -3,7 +3,8 @@
 # summaries (compare.py). Then reads every surface the C++ library wrote back
 # through the C library, and compares those summaries with the ones of the
 # surfaces the C library wrote itself: this checks the .gts writer. The cases
-# in ties.txt are compared by the distance between the two surfaces.
+# in ties.txt are compared by the distance between the two surfaces, and
+# those in fixed.txt by the check given there.
 #
 # usage: test/compare/compare.sh [OUTDIR]     (default test/compare/out)
 

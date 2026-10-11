@@ -1,0 +1,22 @@
+# Cases where gts-cxx fixes an error of GTS, so the results differ. Each is
+# listed in QUIRKS.md under "Fixed". compare.py does not compare their
+# summaries with the C library's; it runs the check given here instead.
+#
+# Each line is: NAME  CHECK
+#   valid              the C++ result is closed, manifold and orientable
+#   lines C | C++      every line that differs reads C in the C summary and
+#                      C++ in the C++ one
+
+# The layer round the grid is complete, so the surfaces close.
+iso-tetra_bounded-sphere    valid
+iso-tetra_bounded-torus     valid
+iso-tetra_bounded-blobs     valid
+
+# iso is subtracted from the second slice, so the first layer of cubes is
+# right and the surfaces close.
+iso-tetra_bcl-sphere        valid
+iso-tetra_bcl-blobs         valid
+
+# The C library's bounded torus has vertices whose region has no area, where
+# GTS divided by zero for the Gaussian curvature.
+curvature-torus-bounded     lines mean=0 gauss=1 | mean=0 gauss=0

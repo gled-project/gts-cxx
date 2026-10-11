@@ -63,14 +63,13 @@ void isosurface_cartesian(Surface& s, CartesianGrid g, const PlaneFunc& f, doubl
 void isosurface_tetra(Surface& s, CartesianGrid g, const PlaneFunc& f, double iso);
 
 // gts_isosurface_tetra_bounded: isosurface_tetra on the grid extended by a
-// layer of points with f - iso = -1 on each side, meant to close the
-// surface where it leaves the grid. It keeps GTS's errors in building the
-// layer; see QUIRKS.md.
+// layer of points with f - iso = -1 on each side, a grid step beyond it,
+// which closes the surface where it leaves the grid; see QUIRKS.md.
 void isosurface_tetra_bounded(Surface& s, CartesianGrid g, const PlaneFunc& f, double iso);
 
-// gts_isosurface_tetra_bcl: the body-centred variant, with each cube split
-// into twelve tetrahedra round its centre. It keeps GTS's error in the
-// first slices; see QUIRKS.md.
+// gts_isosurface_tetra_bcl: the body-centred variant, with tetrahedra
+// joining the centre of each cube to the centres of its neighbours. It
+// covers the grid between the centres of the outermost cubes.
 void isosurface_tetra_bcl(Surface& s, CartesianGrid g, const PlaneFunc& f, double iso);
 
 } // namespace gts

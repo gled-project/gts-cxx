@@ -29,8 +29,8 @@ VertexId midvertex(Geometrium& g, EdgeId e);
 VertexId unit_sphere_arc_midvertex(Geometrium& g, EdgeId e);
 
 // gts_surface_tessellate: splits every face of s into four, splitting each
-// edge once with split (by default unit_sphere_arc_midvertex). Faces of other
-// surfaces that share an edge with s keep the edge.
+// edge once with split (by default unit_sphere_arc_midvertex). A face of
+// another surface on a split edge is split in two at the same vertex.
 void tessellate(Surface& s, const Splitter& split = {});
 
 // gts_surface_refine: splits the edges of s in the order of cost, smallest

@@ -33,12 +33,19 @@ void Geometrium::join_surfaces(FaceId piece, FaceId parent)
 std::array<EdgeId, 2> Geometrium::split_edge(EdgeId e, VertexId m, const std::function<void(EdgeId)>& on_new_edge)
 {
   auto made = [&](EdgeId x) { split_attributes(x, e); if (on_new_edge) on_new_edge(x); };
-  EdgeId e1 = add_edge(m_edges[e.i].v[0], m);
+  const EdgeId e1 = add_edge(m_edges[e.i].v[0], m);
   made(e1);
-  EdgeId e2 = add_edge(m_edges[e.i].v[1], m);
+  const EdgeId e2 = add_edge(m_edges[e.i].v[1], m);
   made(e2);
   const std::array<EdgeId, 2> halves = { e1, e2 };
+  const EdgeSplitEvent es = { e, m, halves };
+  split_faces(e, m, halves, on_new_edge, &es);
+  return halves;
+}
 
+void Geometrium::split_faces(EdgeId e, VertexId m, std::array<EdgeId, 2> halves,
+                             const std::function<void(EdgeId)>& on_new_edge, const EdgeSplitEvent* es)
+{
   // The faces leave the ring of e as they are split.
   std::vector<FaceId> faces;
   for (FaceId t : faces_of(e)) faces.push_back(t);
@@ -49,6 +56,7 @@ std::array<EdgeId, 2> Geometrium::split_edge(EdgeId e, VertexId m, const std::fu
   cuts.reserve(faces.size());
   for (FaceId t : faces)
   {
+    EdgeId e1 = halves[0], e2 = halves[1];
     const auto [v, te] = vertices_edges(t, e);
     const EdgeId ne = add_edge(m, v[2]);
     if (on_new_edge) on_new_edge(ne);
@@ -65,13 +73,25 @@ std::array<EdgeId, 2> Geometrium::split_edge(EdgeId e, VertexId m, const std::fu
 
   if ( ! m_split_callouts->callouts.empty())
   {
-    const EdgeSplitEvent es = { e, m, halves };
     std::vector<FaceSplitEvent> fs;
     for (std::size_t i = 0; i < faces.size(); ++i)
       fs.push_back({ faces[i], std::span(pieces).subspan(2 * i, 2), std::span(cuts).subspan(i, 1) });
-    call(m_split_callouts, SplitEvent{ std::span(&es, 1), fs });
+    call(m_split_callouts, SplitEvent{ es ? std::span(es, 1) : std::span<const EdgeSplitEvent>(), fs });
   }
-  return halves;
+}
+
+void Geometrium::split_remaining(SplitMemo& memo)
+{
+  for (Index i = 0; i < Index(memo.m_halves.size()); ++i)
+  {
+    const auto h = memo.m_halves[i];
+    const EdgeId e(i);
+    if ( ! h[0].valid() || dead(e)) continue;
+    // h[0] runs from one end of e to the vertex that split it.
+    const VertexId m = m_edges[h[0].i].v[1];
+    const bool first = m_edges[h[0].i].v[0] == m_edges[e.i].v[0];
+    split_faces(e, m, first ? h : std::array{ h[1], h[0] }, {}, nullptr);
+  }
 }
 
 // GTS kept the halves in the edge's reserved pointer, in the order they were

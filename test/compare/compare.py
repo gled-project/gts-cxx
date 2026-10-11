@@ -27,7 +27,12 @@ crashed. --classify DIR takes the sos_ties lines from the summaries in DIR,
 for comparisons where CXXDIR holds summaries the C library made of the C++
 surfaces.
 
-Exits with 1 if any other case differs, or a degenerate result is not valid.
+Cases listed in fixed.txt are those where gts-cxx fixes an error of GTS.
+A difference there is not counted; the check given in fixed.txt must pass
+instead.
+
+Exits with 1 if any other case differs, a degenerate result is not valid,
+or the check of a fixed case fails.
 """
 
 import math
@@ -77,6 +82,30 @@ def ties():
     return names
 
 
+def fixed():
+    path = pathlib.Path(__file__).with_name("fixed.txt")
+    checks = {}
+    for line in path.read_text().splitlines():
+        if line.strip() and not line.startswith("#"):
+            name, _, check = line.strip().partition(" ")
+            checks[name] = check.strip()
+    return checks
+
+
+def check_fixed(check, r, c, diff_keys):
+    """Runs the check of a fixed case; returns an error message or None."""
+    kind, _, arg = check.partition(" ")
+    if kind == "valid":
+        if not c.get("status", "").startswith("ok"):
+            return f"C++ status {c.get('status')}"
+        return None if valid(c) else "C++ result not closed, manifold and orientable"
+    if kind == "lines":
+        want_r, _, want_c = (x.strip() for x in arg.partition("|"))
+        bad = [k for k in diff_keys if (r.get(k), c.get(k)) != (want_r, want_c)]
+        return f"{len(bad)} other lines differ, as {bad[0]}" if bad else None
+    return f"unknown check '{check}'"
+
+
 def valid(c):
     return all(c.get(k) == "1" for k in ("closed", "manifold", "orientable"))
 
@@ -93,8 +122,9 @@ def main():
     classify_dir = classify_dir or cxx_dir
 
     tied = ties()
+    fixes = fixed()
     n_same = n_diff = n_tie = n_unsupported = n_ref_crash = 0
-    n_degenerate = n_invalid = 0
+    n_degenerate = n_invalid = n_fixed = 0
     one_sided = {}
     for cxx in sorted(cxx_dir.glob("*.txt")):
         ref = ref_dir / cxx.name
@@ -119,7 +149,7 @@ def main():
             print(f"C crashed ({r.get('exit')}), C++: status {c.get('status', '?')}  {name}{note}")
             continue
 
-        diffs = []
+        diffs, diff_keys = [], []
         rs, cs = r.get("status", "?").split()[0], c.get("status", "?").split()[0]
         if rs != cs:
             diffs.append(f"status: C {r.get('status')} | C++ {c.get('status')}")
@@ -135,7 +165,16 @@ def main():
             if len(vr) != len(vc) or any(nr != nc or not close(xr, xc, rtol)
                                          for (nr, xr), (nc, xc) in zip(vr, vc)):
                 diffs.append(f"{key}: C {r[key]} | C++ {c[key]}")
-        if diffs and degenerate:
+                diff_keys.append(key)
+        if diffs and name in fixes:
+            error = check_fixed(fixes[name], r, c, diff_keys if rs == cs else ["status"])
+            if error:
+                n_invalid += 1
+                print(f"INVALID {name}: fixed case, check '{fixes[name]}' failed: {error}")
+            else:
+                n_fixed += 1
+                print(f"FIXED {name}: {len(diffs)} lines differ, check '{fixes[name]}' passed")
+        elif diffs and degenerate:
             n_degenerate += 1
             if cxx_ok and not valid(c):
                 n_invalid += 1
@@ -155,7 +194,7 @@ def main():
 
     for (key, side), n in sorted(one_sided.items()):
         print(f"note: '{key}' only from {side}, in {n} cases")
-    print(f"same {n_same}, different {n_diff}, tied {n_tie}, degenerate {n_degenerate} "
+    print(f"same {n_same}, different {n_diff}, tied {n_tie}, fixed {n_fixed}, degenerate {n_degenerate} "
           f"(invalid {n_invalid}), unsupported in C++ {n_unsupported}, "
           f"C crashed {n_ref_crash}  (rtol {rtol})")
     return 1 if n_diff or n_invalid else 0

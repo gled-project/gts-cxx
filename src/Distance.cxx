@@ -6,6 +6,7 @@
 #include "gts/Distance.h"
 #include "gts/Predicates.h"
 
+#include <algorithm>
 #include <climits>
 #include <cmath>
 #include <stdexcept>
@@ -234,7 +235,9 @@ bool is_inside(const BBTree& tree, Vec3 p, bool is_open)
     throw std::invalid_argument("gts::is_inside: the tree is empty");
   const BBox& bb = tree.box();
   const RankedPoint rp{ p, UINT_MAX - 1 };
-  const RankedPoint rp1{ { bb.max.x + std::fabs(bb.max.x)/10., p.y, p.z }, UINT_MAX };
+  // The ray ends beyond the box, also when max.x is 0.
+  const double step = std::max(std::fabs(bb.max.x), bb.max.x - bb.min.x);
+  const RankedPoint rp1{ { bb.max.x + (step > 0. ? step/10. : 1.), p.y, p.z }, UINT_MAX };
   unsigned nc = 0;
   for (const BBLeaf& l : tree.stabbed(p))
     if (ray_crosses(tree.geometrium(), rp, rp1, l.face))
@@ -353,7 +356,7 @@ Range boundary_distance(const BBTree& tree, const Surface& s, double delta, cons
   double total_length = 0.;
   for (EdgeId e : s.edges())
   {
-    if ( ! boundary_face(g, e).valid()) continue;
+    if ( ! boundary_face(g, e, &s).valid()) continue;
     const Range re = edge_distance(tree, g, e, delta, d);
     if (re.min < range.min) range.min = re.min;
     if (re.max > range.max) range.max = re.max;
@@ -381,7 +384,7 @@ SurfaceDistance distance(const Surface& s1, const Surface& s2, double delta)
   const Geometrium& g2 = s2.geometrium();
   std::vector<EdgeId> edges;
   for (EdgeId e : s2.edges())
-    if (boundary_face(g2, e).valid()) edges.push_back(e);
+    if (boundary_face(g2, e, &s2).valid()) edges.push_back(e);
   if ( ! edges.empty())
   {
     const BBTree boundary(g2, edges);

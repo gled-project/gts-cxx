@@ -122,18 +122,15 @@ private:
     return (unsigned char) m_buf[m_at++];
   }
 
-  // gts_file_getc: skips comments, including their newline, and counts
-  // lines, positions and braces.
+  // gts_file_getc: skips comments up to their newline, and counts lines,
+  // positions and braces.
   int getc()
   {
     if (m_type == Error) return EOF;
     int c = raw();
     ++m_curpos;
-    while (in(c, kComments))
-    {
+    if (in(c, kComments))
       while (c != EOF && c != '\n') c = raw();
-      if (c == '\n') { ++m_curline; m_curpos = 1; c = raw(); }
-    }
     switch (c)
     {
       case '\n': ++m_curline; m_curpos = 1; break;
@@ -188,6 +185,7 @@ bool is_number(Tokenizer::Type t) { return t == Tokenizer::Int || t == Tokenizer
 std::expected<Surface*, ReadError> read_gts(Geometrium& g, std::istream& in, std::string name)
 {
   Tokenizer f(std::string(std::istreambuf_iterator<char>(in), {}));
+  while (f.ch() == '\n') f.next();
 
   auto read_count = [&](const char* what) -> long {
     if (f.type() != Tokenizer::Int) { f.fail(std::format("expecting an integer ({})", what)); return 0; }

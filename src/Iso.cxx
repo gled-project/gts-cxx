@@ -389,24 +389,21 @@ void add_face_bcl(Surface& s, const TetraVertex& a1, const TetraVertex& a2, cons
   s.add_face(geo.add_face(e1, e2, e3));
 }
 
-void iso_slice_evaluate_bcl(const Slice& s1, const Slice& s2, const Slice& s3, const CartesianGrid& g, int z,
+// iso_slice_evaluate_bcl for the cubes between s1 and s2: each cube's
+// centre is joined to the centres of the next cubes in x, y and z, where
+// they exist; s3, the slice above s2, is null for the last layer.
+void iso_slice_evaluate_bcl(const Slice& s1, const Slice& s2, const Slice* s3, const CartesianGrid& g, int z,
                             Surface& s, HelperBcl& h)
 {
-  for (int y = 0; y < int(g.ny) - 2; y++)
-    for (int x = 0; x < int(g.nx) - 2; x++)
+  auto centre = [](const Slice& a, const Slice& b, int x, int y) {
+    return (a(x, y) + b(x, y) + a(x, y + 1) + b(x, y + 1) +
+            a(x + 1, y) + b(x + 1, y) + a(x + 1, y + 1) + b(x + 1, y + 1)) / 8.0;
+  };
+  const int nx = int(g.nx) - 1, ny = int(g.ny) - 1; // cubes in x and y
+  for (int y = 0; y < ny; y++)
+    for (int x = 0; x < nx; x++)
     {
-      const TetraVertex v0 = { x, y, z, true,
-        (s1(x, y) + s2(x, y) + s1(x, y + 1) + s2(x, y + 1) +
-         s1(x + 1, y) + s2(x + 1, y) + s1(x + 1, y + 1) + s2(x + 1, y + 1)) / 8.0 };
-      const TetraVertex v1 = { x + 1, y, z, true,
-        (s1(x + 1, y) + s2(x + 1, y) + s1(x + 1, y + 1) + s2(x + 1, y + 1) +
-         s1(x + 2, y) + s2(x + 2, y) + s1(x + 2, y + 1) + s2(x + 2, y + 1)) / 8.0 };
-      const TetraVertex v2 = { x, y + 1, z, true,
-        (s1(x, y + 1) + s2(x, y + 1) + s1(x, y + 2) + s2(x, y + 2) +
-         s1(x + 1, y + 1) + s2(x + 1, y + 1) + s1(x + 1, y + 2) + s2(x + 1, y + 2)) / 8.0 };
-      const TetraVertex v3 = { x, y, z + 1, true,
-        (s2(x, y) + s3(x, y) + s2(x, y + 1) + s3(x, y + 1) +
-         s2(x + 1, y) + s3(x + 1, y) + s2(x + 1, y + 1) + s3(x + 1, y + 1)) / 8.0 };
+      const TetraVertex v0 = { x, y, z, true, centre(s1, s2, x, y) };
       const TetraVertex v4 = { x + 1, y,     z,     false, s1(x + 1, y    ) };
       const TetraVertex v5 = { x,     y + 1, z,     false, s1(x,     y + 1) };
       const TetraVertex v6 = { x + 1, y + 1, z,     false, s1(x + 1, y + 1) };
@@ -419,34 +416,40 @@ void iso_slice_evaluate_bcl(const Slice& s1, const Slice& s2, const Slice& s3, c
         add_face_bcl(s, a1, a2, b1, b2, c1, c2, rev, h, z, g);
       };
       // analyze_tetrahedra_bcl starts from rev = 0 instead of the parity.
-      analyze_tetrahedra(v0, v9, v6, v1, false, add);
-      analyze_tetrahedra(v0, v6, v4, v1, false, add);
-      analyze_tetrahedra(v0, v4, v7, v1, false, add);
-      analyze_tetrahedra(v0, v7, v9, v1, false, add);
-      analyze_tetrahedra(v0, v5, v6, v2, false, add);
-      analyze_tetrahedra(v0, v6, v9, v2, false, add);
-      analyze_tetrahedra(v0, v9, v8, v2, false, add);
-      analyze_tetrahedra(v0, v8, v5, v2, false, add);
-      analyze_tetrahedra(v0, v8, v9, v3, false, add);
-      analyze_tetrahedra(v0, v9, v7, v3, false, add);
-      analyze_tetrahedra(v0, v7, w0, v3, false, add);
-      analyze_tetrahedra(v0, w0, v8, v3, false, add);
+      if (x + 1 < nx)
+      {
+        const TetraVertex v1 = { x + 1, y, z, true, centre(s1, s2, x + 1, y) };
+        analyze_tetrahedra(v0, v9, v6, v1, false, add);
+        analyze_tetrahedra(v0, v6, v4, v1, false, add);
+        analyze_tetrahedra(v0, v4, v7, v1, false, add);
+        analyze_tetrahedra(v0, v7, v9, v1, false, add);
+      }
+      if (y + 1 < ny)
+      {
+        const TetraVertex v2 = { x, y + 1, z, true, centre(s1, s2, x, y + 1) };
+        analyze_tetrahedra(v0, v5, v6, v2, false, add);
+        analyze_tetrahedra(v0, v6, v9, v2, false, add);
+        analyze_tetrahedra(v0, v9, v8, v2, false, add);
+        analyze_tetrahedra(v0, v8, v5, v2, false, add);
+      }
+      if (s3)
+      {
+        const TetraVertex v3 = { x, y, z + 1, true, centre(s2, *s3, x, y) };
+        analyze_tetrahedra(v0, v8, v9, v3, false, add);
+        analyze_tetrahedra(v0, v9, v7, v3, false, add);
+        analyze_tetrahedra(v0, v7, w0, v3, false, add);
+        analyze_tetrahedra(v0, w0, v8, v3, false, add);
+      }
     }
 }
 
-// copy_to_bounded, with GTS's two indexing errors kept; see QUIRKS.md.
+// copy_to_bounded: src minus iso inside a border of fill.
 void copy_to_bounded(Slice& dest, const Slice& src, double iso, double fill)
 {
-  for (unsigned y = 0; y < dest.ny(); ++y) dest(0, y) = fill;
-  unsigned y = dest.ny();
-  for (unsigned x = 1; x + 1 < src.nx(); ++x)
-  {
-    dest(x, 0) = fill;
-    for (y = 0; y < src.ny(); ++y) dest(x, y + 1) = src(x - 1, y) - iso;
-    dest(x, y + 1) = fill;
-  }
-  if (y < dest.nx())
-    for (unsigned k = 0; k < dest.ny(); ++k) dest(y, k) = fill;
+  slice_init(dest, fill);
+  for (unsigned x = 0; x < src.nx(); ++x)
+    for (unsigned y = 0; y < src.ny(); ++y)
+      dest(x + 1, y + 1) = src(x, y) - iso;
 }
 
 } // namespace
@@ -562,8 +565,7 @@ void isosurface_tetra_bcl(Surface& s, CartesianGrid g, const PlaneFunc& f, doubl
   z++;
   g.z += g.dz;
   f(*slice2, g, z);
-  // GTS subtracts iso from slice1 again here, and never from slice2.
-  iso_sub(*slice1, iso);
+  iso_sub(*slice2, iso);
   z++;
   g.z += g.dz;
   while (z < g.nz)
@@ -571,7 +573,7 @@ void isosurface_tetra_bcl(Surface& s, CartesianGrid g, const PlaneFunc& f, doubl
     f(*slice3, g, z);
     iso_sub(*slice3, iso);
     g.z += g.dz;
-    iso_slice_evaluate_bcl(*slice1, *slice2, *slice3, gi, int(z) - 2, s, helper);
+    iso_slice_evaluate_bcl(*slice1, *slice2, slice3, gi, int(z) - 2, s, helper);
     Slice* hs = slice1;
     slice1 = slice2;
     slice2 = slice3;
@@ -579,6 +581,7 @@ void isosurface_tetra_bcl(Surface& s, CartesianGrid g, const PlaneFunc& f, doubl
     helper.advance();
     ++z;
   }
+  iso_slice_evaluate_bcl(*slice1, *slice2, nullptr, gi, int(z) - 2, s, helper);
 }
 
 } // namespace gts

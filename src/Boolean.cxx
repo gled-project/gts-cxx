@@ -902,21 +902,13 @@ SurfaceInter::Check SurfaceInter::check() const
     unsigned nn = 0;
     const VertexId a = g.edge(s).v[0], b = g.edge(s).v[1];
     for (EdgeId s1 : g.edges_of(a))
-    {
-      if ( ! r.ok) break;
       if (s1 != s && on_curve[s1.i]) { if (g.edge(s1).v[1] != a) r.ok = false; nn++; }
-    }
     for (EdgeId s1 : g.edges_of(b))
-    {
-      if ( ! r.ok) break;
       if (s1 != s && on_curve[s1.i]) { if (g.edge(s1).v[0] != b) r.ok = false; nn++; }
-    }
     if (nn != 2) r.closed = false;
     if ( ! check_orientation(g, s, *m_pieces[0])) r.ok = false;
     if ( ! check_orientation(g, s, *m_pieces[1])) r.ok = false;
   }
-  // As in GTS, a failure leaves the curve counted as not closed; see
-  // QUIRKS.md.
 
   // check_surface_edge: each edge of the pieces has one or two of them,
   // and an edge with one also has a face of the uncut surface.

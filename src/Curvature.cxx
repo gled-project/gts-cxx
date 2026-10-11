@@ -224,6 +224,7 @@ std::optional<double> gaussian_curvature(const Surface& s, VertexId v)
   double angle_sum = 0.0;
   for (EdgeId e : edges)
     angle_sum += angle_from_cotan(g, v, g.edge(e).v[0], g.edge(e).v[1]);
+  if ( ! (area > 0.0)) return std::nullopt;
   return (2.0*std::numbers::pi - angle_sum)/area;
 }
 

@@ -21,14 +21,22 @@ with `compare.py`: integers exactly, floating-point values to a relative
 tolerance (default 1e-9). It then reads every surface the C++ library wrote
 back through the C library, to check the writer.
 
-On 2026-10-09 all 261 cases run through both libraries: the 240 of the
-port of what Gled calls, and 21 for the distances, the inside test,
-curvature, merging and the centres. These 21 print a line per vertex or
-sample point, keyed by its coordinates, and read surfaces the C library
-wrote (`@REF@` in `cases.txt`), so that both programs measure the same
-input. 168 cases agree with the C library in every value to 1e-9, and so do
-the surfaces written by the C++ library when read by the C one. The
-summaries include whether the surface intersects itself.
+All 261 cases run through both libraries: the 240 of the port of what
+Gled calls, and 21 for the distances, the inside test, curvature, merging
+and the centres. These 21 print a line per vertex or sample point, keyed by
+its coordinates, and read surfaces the C library wrote (`@REF@` in
+`cases.txt`), so that both programs measure the same input. On 2026-10-10,
+162 cases agree with the C library in every value to 1e-9, and so do the
+surfaces written by the C++ library when read by the C one. The summaries
+include whether the surface intersects itself.
+
+6 cases are in `test/compare/fixed.txt`: gts-cxx fixes an error of GTS
+there (see `QUIRKS.md`), so the results differ. `compare.py` runs the check
+given for each instead. The five iso-surfaces of the bounded and the
+body-centred tetrahedra must be closed, manifold and orientable, also when
+the C library reads them back. In the curvature of the C library's bounded
+torus, the only lines that may differ are those of vertices where gts-cxx
+gives no Gaussian curvature.
 
 5 cases are in `test/compare/ties.txt`: their costs tie, or their cut faces
 are triangulated in another order, and GTS's choice there follows memory

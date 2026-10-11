@@ -52,6 +52,7 @@ void tessellate(Surface& s, const Splitter& split)
   SplitMemo memo;
   for (FaceId f : faces)
     g.split_face4(f, sp, memo);
+  g.split_remaining(memo);
 }
 
 void refine(Surface& s, const RefineStop& stop, const EdgeCost& cost, const Splitter& split)
@@ -67,11 +68,15 @@ void refine(Surface& s, const RefineStop& stop, const EdgeCost& cost, const Spli
   heap.freeze();
   for (EdgeId e : s.edges()) heap.insert(e);
   heap.thaw();
+  std::vector<EdgeId> fresh;
   while (auto top = heap.remove_top())
   {
     const auto [e, c] = *top;
     if (stop(c, heap.size() + face_number(s, e) + 2)) break;
-    g.split_edge(e, sp(g, e), [&](EdgeId x) { heap.insert(x); });
+    // The new edges are costed once they have their faces.
+    fresh.clear();
+    g.split_edge(e, sp(g, e), [&](EdgeId x) { fresh.push_back(x); });
+    for (EdgeId x : fresh) heap.insert(x);
   }
 }
 

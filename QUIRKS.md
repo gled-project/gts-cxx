@@ -1,14 +1,80 @@
 # Quirks
 
-gts-cxx first reproduces GTS exactly, so that its results can be compared
-with the C library's case by case. Where GTS behaves oddly, the port keeps
-the behaviour and lists it here, with what could be done instead. Where the
+gts-cxx 0.1.0 reproduced GTS exactly, so that its results could be compared
+with the C library's case by case. Where GTS behaves oddly, the port kept
+the behaviour and listed it here, with what could be done instead. Where the
 port had to depart from GTS, or chose to, the departure is listed too.
-Nothing below is decided until it is taken up.
 
-## Kept from GTS, to improve later
+The entries are in four groups. Fixed: errors of GTS that gts-cxx no longer
+has. Errors: errors of GTS that gts-cxx still has. Choices: behaviour that
+is consistent but may be changed, to be decided. Kept: behaviour that stays.
+Nothing under Choices is decided until it is taken up.
 
-### Choices between equal costs
+## Fixed
+
+`test/compare/fixed.txt` lists the comparison cases whose results these
+fixes change, with the check each must pass instead of equality with GTS.
+
+- Reading `.gts` files: a comment at the end of a line swallowed the
+  newline and the line after it, and the C library fails on such files. The
+  comment now ends the line.
+- `isosurface_tetra_bounded()` is meant to close the surface where it leaves
+  the grid by adding a layer of points with f - iso = -1 round it. GTS's
+  `copy_to_bounded()` built that layer with two indexing errors. Its loop
+  over columns stopped two columns early, so the last two columns of the
+  function's values were dropped. It wrote the last border column at index
+  ny instead of nx + 1, so two or three columns of the enlarged slice were
+  never written, and when ny exceeded nx + 1 it wrote past the slice. The
+  unwritten columns kept what malloc returned. In GledGTS a 24 x 20 x 18
+  grid gave 13255 and 12892 vertices in two runs, the second with a NaN
+  area, and valgrind reported GTS reading uninitialised memory. gts-cxx now
+  copies every value into the enlarged slice inside a complete border, and
+  the surfaces close.
+- `isosurface_tetra_bcl()` subtracted iso from the first slice twice and
+  never from the second, so the first layer of cubes was wrong and the
+  surfaces of the sphere and the blobs were not closed. It now subtracts iso
+  from each slice once.
+- `SurfaceInter::check()` stopped looking at the neighbours of a segment
+  once a check had failed, so all later segments counted as not closed. It
+  now counts them, and `closed` says whether the curve is closed.
+- `refine()` computed the cost of each new edge before the edge had faces,
+  so with a cost that depends on the faces, such as GledGTS's angle cost,
+  every new edge got the default cost. The new edges are now costed after
+  the split.
+- `quality_stats()` took the edge angles between every pair of faces on an
+  edge, also faces of other surfaces. It now takes only the faces of the
+  surface.
+- `boundary_distance()` and `distance()` counted as boundary an edge with
+  one face in any surface, as GTS passed no surface to
+  `gts_edge_is_boundary()`. They now count the faces of the surface
+  measured.
+- `is_inside()` ended its ray at x_max + |x_max| / 10 of the tree's box, so
+  when x_max was 0 the ray ended on the box. It now ends a tenth of the
+  larger of |x_max| and the box's width beyond the box.
+- `gaussian_curvature()` divided by the area of the vertex's region without
+  checking it. It now gives none where the area is not positive, as
+  `mean_curvature_normal()` does. The C library's bounded torus has such
+  vertices, where GTS gave infinity.
+- `isosurface_tetra_bcl()` built, for each cube, the tetrahedra towards
+  the cubes above it and beside it, but skipped the last layer of cubes in
+  z and the last column in x and in y altogether. Their tetrahedra towards
+  the neighbours they do have were never built, and a surface that crossed
+  them was left open. Every cube is now visited, and each group of
+  tetrahedra is built where its neighbour exists.
+- `tessellate()` left a face of another surface on a split edge on the old
+  edge, beside the two halves, so the two surfaces no longer shared the
+  seam. `Geometrium::split_remaining()` now splits such faces in two at the
+  same vertex, with the same halves.
+- When a collapse left an edge without faces (only with duplicate faces in
+  the input), GTS gave up the new vertex if that edge was the last in the
+  vertex's list, even when the vertex still had other edges. The new
+  vertex is now given up only when it has no edges left.
+
+## Errors
+
+None known.
+
+## Choices
 
 - Refinement and coarsening fill their edge heap in the order of GTS's face
   hash table, which follows memory addresses. Where costs tie, the result
@@ -17,25 +83,39 @@ Nothing below is decided until it is taken up.
   differently from GTS. A tie-break by geometry, such as by the edge's
   midpoint, would make the result independent of the order of the input
   too.
-- GtsEHeap's randomized mode is not ported.
-
-### Refinement and tessellation
-
-- `refine()` computes the cost of each new edge before the edge has faces,
-  as GTS does. With a cost that depends on the faces, such as GledGTS's
-  angle cost, every new edge gets the default cost (1 for the angle cost),
-  however the faces turn out.
+- `isosurface_tetra()` and its two variants orient the faces towards
+  f < iso. `isosurface_cartesian()`, and GTS's documentation of all four,
+  orient them towards f > iso. A sphere from the tetrahedra has negative
+  volume. GledGTS's `GTSIsoMaker` inverts the tetra surfaces
+  (`bInvertTetra`).
+- The layer of `isosurface_tetra_bounded()` marks as outside the side where
+  f - iso < 0, which is the inside for a function that grows outwards, such
+  as the squared distance from a centre. The surface of such a function
+  then gets a second sheet round the grid. The layer lies a grid step
+  beyond the grid.
 - `tessellate()` without a splitting function projects every new vertex
   onto the unit sphere, as GTS's `gts_surface_tessellate` does. A cube
   tessellated this way becomes a rough sphere. The default suits only
   `generate_sphere()`.
-- A face of another surface on an edge that `tessellate()` splits keeps the
-  old edge, beside the two halves. The two surfaces then no longer share
-  the seam, and with the sphere projection the halves are not even on the
-  old edge.
+- `gts_matrix_compatible_row()` drops a constraint row only when it is
+  exactly zero. melowntech's GTS changed the test to `|row|^2 < 1e-12`
+  against instabilities when the row is nearly zero. That threshold is
+  absolute, and for a mesh a few centimetres across measured in metres,
+  valid rows are of that size. A threshold relative to the scale of the
+  faces around the edge would serve both.
+- `sample()` steps through a plane by adding dx and dy, as GledGTS's
+  `GTSIsoMaker` did, and the cartesian method steps z by adding and
+  subtracting dz. The tetrahedra methods compute positions as
+  x0 + dx * (i + t). The two kinds of methods put the same grid points at
+  positions that differ in the last bits. Computing every coordinate as
+  x0 + i * dx would be exact to one rounding.
+- `principal_curvatures()` is given half the length of the mean curvature
+  normal, so the mean curvature has no sign, and a concave region gets the
+  same curvatures as the convex one.
 
-### Coarsening
+## Kept
 
+- GtsEHeap's randomized mode is not ported.
 - The fold test (`collapse_folds()`) finds faces that fold back onto each
   other across an edge, and faces 1e4 times larger than a neighbour. It does
   not find faces that turn over without folding onto a neighbour, nor faces
@@ -43,63 +123,23 @@ Nothing below is decided until it is taken up.
 - After a collapse, the costs of the edges within two edges of the new
   vertex are recomputed. An edge there that was not in the heap, such as an
   edge of another surface, is put in. GTS did so after a CRITICAL message.
-- The number given to the stop function, the heap size minus the faces of
-  the edge, is unsigned and wraps round when the heap is nearly empty.
-- When a collapse leaves an edge without faces (only with duplicate faces
-  in the input), GTS gives up the new vertex if that edge was the last in
-  the vertex's list, even when the vertex still has other edges.
 - The neighbourhood lists of the volume-optimized vertex are built as GTS
   built them, with a linear search for each element. Vertices with
   hundreds of edges, as at the caps of `1.gts`, make this quadratic.
   gts-cxx is still about 4 times faster than GTS on that case.
-- `gts_matrix_compatible_row()` drops a constraint row only when it is
-  exactly zero. melowntech's GTS changed the test to `|row|^2 < 1e-12`
-  against instabilities when the row is nearly zero. That threshold is
-  absolute, and for a mesh a few centimetres across measured in metres,
-  valid rows are of that size. A threshold relative to the scale of the
-  faces around the edge would serve both.
-
-### Iso-surfaces
-
-- `isosurface_tetra()` and its two variants orient the faces towards
-  f < iso. `isosurface_cartesian()`, and GTS's documentation of all four,
-  orient them towards f > iso. A sphere from the tetrahedra has negative
-  volume.
-- `isosurface_tetra_bounded()` is meant to close the surface where it
-  leaves the grid by adding a layer of points with f - iso = -1 round it.
-  `copy_to_bounded()` in GTS builds that layer with two errors. Its loop
-  over columns stops two columns early, so the last two columns of the
-  function's values are dropped. It writes the last border column at the
-  index the row counter is left with, which is ny. When nx equals ny, two
-  columns of the enlarged slice are then never written. Otherwise three
-  are not, and the border column lands at ny: inside the slice it
-  overwrites a column of values, and when ny exceeds nx + 1 GTS writes past
-  the slice, which the port skips. In one of the two slices the unwritten
-  columns keep -1 from the start; in the other they keep what malloc
-  returned. The port takes zero for that, which reproduces GTS in a fresh
-  process: the three test cases, and a 24 x 20 x 18 grid. In a program that
-  has used its heap, malloc returns old data. Valgrind reports GTS reading
-  it, and the same 24 x 20 x 18 grid in GledGTS gave 13255 and 12892
-  vertices in two runs, the second with a NaN area, where gts-cxx gives
-  13223. The surfaces are not closed, and they extend a grid step beyond
-  the grid. The layer also marks as outside the side where
-  f - iso < 0, which is the inside for a function that grows outwards, such
-  as the squared distance from a centre.
-- `isosurface_tetra_bcl()` subtracts iso from the first slice twice and
-  never from the second. The first layer of cubes is therefore wrong, and
-  for the sphere and the blobs the surface is not closed.
-- `sample()` steps through a plane by adding dx and dy, as GledGTS's
-  `GTSIsoMaker` did, and the cartesian method steps z by adding and
-  subtracting dz. The tetrahedra methods compute positions as
-  x0 + dx * (i + t). The two kinds of methods put the same grid points at
-  positions that differ in the last bits. Computing every coordinate as
-  x0 + i * dx would be exact to one rounding.
+- `isosurface_tetra_bcl()` covers the grid only between the centres of the
+  outermost cubes, half a grid step inside its boundary, as its tetrahedra
+  join cube centres. A surface that comes closer to the boundary is left
+  open there, where the other methods close it. GledGTS's `GTSTorus` pads
+  its grid by 5% of the radii, which is enough unless the step exceeds a
+  tenth of the minor radius. With a minor radius of 0.8 and a step of 0.1,
+  the outermost centres in z are at 0.7906 and the torus reaches 0.8: the
+  bcl torus has 2016 boundary edges, all at |z| > 0.79, where the
+  cartesian and tetra tori are closed. The `iso_torus.C` demo's torus
+  (1.5 and 0.05) closes with every method.
 - GTS's `get_vertex()` prints to stderr when it finds a crossing in an
   unexpected slice. That cannot happen with its own tetrahedra, and the port
   leaves the print out.
-
-### Booleans
-
 - The faces that the intersection curve cuts are triangulated by ear
   clipping, starting from the first segment of lists whose order follows
   the bounding-box tree. GTS builds that tree from its faces in the order of
@@ -109,53 +149,27 @@ Nothing below is decided until it is taken up.
   or a constrained Delaunay one, would remove the difference and give
   better triangles.
 - `new_ear()` refuses an ear when any edge joins its two outer vertices,
-  through `gts_vertices_are_connected()`. That includes edges of other
-  surfaces in the same Geometrium, which have nothing to do with the face
-  being cut.
+  through `gts_vertices_are_connected()`, not only edges of the face being
+  cut. The outer vertices are corners of the face or points of the curve,
+  so such an edge is an edge of the same surface, a segment of the curve,
+  or, where the two surfaces have coplanar faces, a diagonal of the other
+  surface's pieces; refusing is right for all of them. In the 261
+  comparison cases, every edge that refused an ear was of the surface
+  being cut or had no faces yet.
 - `gts_surface_inter_new()` took whether each surface is open, and did not
   use it. `SurfaceInter` does not take it.
-- `gts_surface_inter_check()` stops looking at the neighbours of a segment
-  once a check has failed, so all later segments then count as not closed.
-  The result is the same: the check has failed.
 - `tribox3.c`, the box-triangle overlap test, is not ported: neither the
   booleans nor the self-intersection test use it.
-
-### Geometry and statistics
-
 - `Geometrium::normal()` uses `gts_triangle_normal`'s own choice of
   vertices, which gives the same orientation as `vertices_of()` but not
   always the same first vertex, so that areas agree with GTS to the bit.
-- The edge angle statistics take every face on the edge, not only the faces
-  of the surface.
-
-### Distance and the inside test
-
-- `surface_distance()`, `boundary_distance()` and `distance()` count as
-  boundary an edge with one face in any surface, not in the surface
-  measured, as GTS passed no surface to `gts_edge_is_boundary()`.
 - `BBTree::point_closest()` gives the square of the distance; GTS
   documented it as the distance.
-- `is_inside()` ends its ray at x_max + |x_max| / 10 of the tree's box, so
-  when x_max is 0 the ray ends on the box.
 - Where two leaves are equally close, `point_distance()` and
   `point_closest()` take the first in the tree's order, which follows the
   order of the faces. GTS's order of faces was its hash order.
-
-### Curvature
-
-- `principal_curvatures()` is given half the length of the mean curvature
-  normal, so the mean curvature has no sign, and a concave region gets the
-  same curvatures as the convex one.
-- `gaussian_curvature()` divides by the area of the vertex's region without
-  checking it, where `mean_curvature_normal()` checks it.
 - `principal_directions()` is arbitrary where the two curvatures are equal,
-  as everywhere on a sphere, and the last bit of a sum decides it. On the
-  layer of `isosurface_tetra_bounded()` it gives NaN, as GTS does.
-
-### Reading `.gts` files
-
-- A comment at the end of a line swallows the newline and the line after
-  it. The C library fails on such files with the same message.
+  as everywhere on a sphere, and the last bit of a sum decides it.
 
 ## Departures from GTS
 
