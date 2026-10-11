@@ -13,6 +13,7 @@
 #include "gts/Geometrium.h"
 
 #include <functional>
+#include <iosfwd>
 #include <vector>
 
 namespace gts {
@@ -42,6 +43,19 @@ inline bool overlapping(const BBox& a, const BBox& b)
             a.min.y > b.max.y || b.min.y > a.max.y ||
             a.min.z > b.max.z || b.min.z > a.max.z);
 }
+
+// gts_bbox_is_stabbed: whether the ray from p towards +x meets b.
+bool is_stabbed(const BBox& b, Vec3 p);
+
+// gts_bbox_overlaps_triangle and gts_bbox_overlaps_segment: whether b and
+// t, or b and s, overlap, by the separating axis test of Tomas
+// Akenine-Möller. GTS took a face's points from its first edge, then the
+// vertex opposite it.
+bool overlaps(const BBox& b, const Triangle& t);
+bool overlaps(const BBox& b, const Segment& s);
+
+// gts_bbox_draw: b as a Geomview OFF object of 8 vertices and 6 faces.
+void write_oogl(const BBox& b, std::ostream& out);
 
 // A leaf of a tree: a face, or an edge in a tree of edges.
 struct BBLeaf
@@ -85,6 +99,16 @@ public:
   // c. distance2, when given, gets the square of its distance from p.
   Vec3 point_closest(Vec3 p, const ClosestFunc& c = {}, double* distance2 = nullptr) const;
 
+  // gts_bb_tree_overlap: the leaves whose boxes overlap b, in the tree's
+  // order.
+  std::vector<BBLeaf> overlap(const BBox& b) const;
+  // gts_bb_tree_is_overlapping: whether a leaf's box overlaps b.
+  bool is_overlapping(const BBox& b) const;
+
+  // gts_bb_tree_draw: the boxes of the nodes at depth, 1 for the root, as a
+  // Geomview LIST.
+  void write_oogl(unsigned depth, std::ostream& out) const;
+
   // gts_bb_tree_traverse_overlapping: calls f(face1, face2) for each pair of
   // a face of a and a face of b whose boxes overlap, in GTS's order. The two
   // trees may be the same, which gives each pair twice and each face with
@@ -106,6 +130,9 @@ private:
   static void traverse(const BBTree& a, int na, const BBTree& b, int nb,
                        const std::function<void(FaceId, FaceId)>& f);
   void stabbed(int n, Vec3 p, std::vector<BBLeaf>& list) const;
+  void overlap(int n, const BBox& b, std::vector<BBLeaf>& list) const;
+  bool is_overlapping(int n, const BBox& b) const;
+  void write_oogl(int n, unsigned d, unsigned depth, std::ostream& out) const;
   double min_max(int n, Vec3 p, double min_max, std::vector<int>& list) const;
 
   const Geometrium* m_geo;

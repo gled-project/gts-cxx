@@ -3,16 +3,20 @@
 # summaries with the C library's; it runs the check given here instead.
 #
 # Each line is: NAME  CHECK
+#   ok                 the C++ status is ok
 #   valid              the C++ result is closed, manifold and orientable
 #   reversed           only the volume differs, with the opposite sign
 #   lines C | C++      every line that differs reads C in the C summary and
 #                      C++ in the C++ one
 
-# The cartesian method orients the faces towards f < iso, as the tetrahedra
-# do.
+# The cartesian method and the slice API orient the faces towards f < iso,
+# as the tetrahedra do.
 iso-cartesian-sphere        reversed
 iso-cartesian-torus         reversed
 iso-cartesian-blobs         reversed
+isoslice-sphere             reversed
+isoslice-torus              reversed
+isoslice-blobs              reversed
 
 # The layer round the grid is complete, so the surfaces close.
 iso-tetra_bounded-sphere    valid
@@ -27,3 +31,10 @@ iso-tetra_bcl-blobs         valid
 # The C library's bounded torus has vertices whose region has no area, where
 # GTS divided by zero for the Gaussian curvature.
 curvature-torus-bounded     lines mean=0 gauss=1 | mean=0 gauss=0
+
+# GTS's hierarchical surface copies each split, then destroys the progressive
+# surface, which frees the lists the copies share, and crashes in its first
+# collapse.
+hsurface-horse5-150         valid
+hsurface-horse5-450         valid
+hsurface-delaunay-800       ok

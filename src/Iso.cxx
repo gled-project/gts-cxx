@@ -40,70 +40,78 @@ EdgeId edge_between(Geometrium& g, VertexId a, VertexId b)
 // Marching cubes, from iso.c
 //==============================================================================
 
-// A crossing of the surface on an edge of the grid. GTS made the vertex of
-// every crossing at once; here it is made when a face first uses it, so
-// that no vertex is left without edges.
-struct Crossing
-{
-  bool     exists = false;
-  int      orientation = 0; // LEFT 0, RIGHT 1: whether f >= iso at the far end
-  Vec3     p;
-  VertexId v;
-};
-
-// GtsIsoSlice: the crossings on the z edges from one plane to the next
-// (array 0), and on the x and y edges in the plane (arrays 1 and 2).
-struct IsoSlice
-{
-  unsigned nx, ny;
-  std::array<std::vector<Crossing>, 3> c;
-
-  IsoSlice(unsigned nx_, unsigned ny_) : nx(nx_), ny(ny_)
-  {
-    c[0].resize(std::size_t(nx) * ny);
-    c[1].resize(std::size_t(nx - 1) * ny);
-    c[2].resize(std::size_t(nx) * (ny - 1));
-  }
-  // Arrays 0 and 1 have ny points per row, array 2 has ny - 1.
-  Crossing& at(unsigned a, unsigned i, unsigned j) { return c[a][std::size_t(i) * (a == 2 ? ny - 1 : ny) + j]; }
-};
-
 bool crosses(double v1, double v2) { return (v1 >= 0. && v2 < 0.) || (v1 < 0. && v2 >= 0.); }
 
-// gts_iso_slice_fill_cartesian for plane k, with f2, plane k + 1, null for
-// the last plane.
-void slice_fill(IsoSlice& s, const CartesianGrid& g, unsigned k, const PlaneValues& f1, const PlaneValues* f2,
-                double iso)
+} // namespace
+
+IsoSlice::IsoSlice(unsigned nx, unsigned ny) : m_nx(nx), m_ny(ny)
 {
-  if (f2)
-    for (unsigned i = 0; i < g.nx; i++)
-      for (unsigned j = 0; j < g.ny; j++)
+  if (nx < 2 || ny < 2)
+    throw std::invalid_argument("gts::IsoSlice: a slice needs at least two points in x and y");
+  m_c[0].resize(std::size_t(nx) * ny);
+  m_c[1].resize(std::size_t(nx - 1) * ny);
+  m_c[2].resize(std::size_t(nx) * (ny - 1));
+}
+
+// point(i, j, a, t): the point at t between point (i, j) and its neighbour
+// along array a: the next plane for 0, i + 1 for 1, j + 1 for 2. GTS made
+// each crossing's vertex at once; here it is made when a face first uses
+// it, so that no vertex is left without edges.
+template <class Point>
+void IsoSlice::fill_with(const Point& point, bool next, const PlaneValues& f1, const PlaneValues* f2, double iso)
+{
+  if (next)
+    for (unsigned i = 0; i < m_nx; i++)
+      for (unsigned j = 0; j < m_ny; j++)
       {
         const double v1 = f1(i, j) - iso, v2 = (*f2)(i, j) - iso;
-        Crossing& c = s.at(0, i, j);
+        Crossing& c = at(0, i, j);
         c = {};
         if (crosses(v1, v2))
-          c = { true, v2 >= 0. ? 1 : 0, grid_point(g, i, j, k + v1 / (v1 - v2)), {} };
+          c = { true, v2 >= 0. ? 1 : 0, point(i, j, 0, v1 / (v1 - v2)), {} };
       }
-  for (unsigned i = 0; i < g.nx - 1; i++)
-    for (unsigned j = 0; j < g.ny; j++)
+  for (unsigned i = 0; i < m_nx - 1; i++)
+    for (unsigned j = 0; j < m_ny; j++)
     {
       const double v1 = f1(i, j) - iso, v2 = f1(i + 1, j) - iso;
-      Crossing& c = s.at(1, i, j);
+      Crossing& c = at(1, i, j);
       c = {};
       if (crosses(v1, v2))
-        c = { true, v2 >= 0. ? 1 : 0, grid_point(g, i + v1 / (v1 - v2), j, k), {} };
+        c = { true, v2 >= 0. ? 1 : 0, point(i, j, 1, v1 / (v1 - v2)), {} };
     }
-  for (unsigned i = 0; i < g.nx; i++)
-    for (unsigned j = 0; j < g.ny - 1; j++)
+  for (unsigned i = 0; i < m_nx; i++)
+    for (unsigned j = 0; j < m_ny - 1; j++)
     {
       const double v1 = f1(i, j) - iso, v2 = f1(i, j + 1) - iso;
-      Crossing& c = s.at(2, i, j);
+      Crossing& c = at(2, i, j);
       c = {};
       if (crosses(v1, v2))
-        c = { true, v2 >= 0. ? 1 : 0, grid_point(g, i, j + v1 / (v1 - v2), k), {} };
+        c = { true, v2 >= 0. ? 1 : 0, point(i, j, 2, v1 / (v1 - v2)), {} };
     }
 }
+
+void IsoSlice::fill(const GridPlane& p1, const GridPlane* p2, const PlaneValues& f1, const PlaneValues* f2, double iso)
+{
+  if (f2 && ! p2)
+    throw std::invalid_argument("gts::IsoSlice::fill: values of the next plane without its points");
+  auto point = [&](unsigned i, unsigned j, unsigned a, double c2) {
+    const double c1 = 1. - c2;
+    const Vec3 x = p1(i, j);
+    const Vec3 y = a == 0 ? (*p2)(i, j) : a == 1 ? p1(i + 1, j) : p1(i, j + 1);
+    return Vec3{ c1*x.x + c2*y.x, c1*x.y + c2*y.y, c1*x.z + c2*y.z };
+  };
+  fill_with(point, f2 != nullptr, f1, f2, iso);
+}
+
+void IsoSlice::fill_cartesian(const CartesianGrid& g, unsigned k, const PlaneValues& f1, const PlaneValues* f2, double iso)
+{
+  auto point = [&](unsigned i, unsigned j, unsigned a, double t) {
+    return a == 0 ? grid_point(g, i, j, k + t) : a == 1 ? grid_point(g, i + t, j, k) : grid_point(g, i, j + t, k);
+  };
+  fill_with(point, f2 != nullptr, f1, f2, iso);
+}
+
+namespace {
 
 // The edges of a cube: which array, which slice, and the offsets in x and y
 // (see GTS's doc/isocube.fig).
@@ -119,26 +127,29 @@ constexpr unsigned kNext[12][2][3] = {
   {{3, 7, 0}, {8, 5, 11}},  {{11, 4, 8}, {1, 6, 2}},  {{2, 5, 1}, {9, 7, 10}},  {{10, 6, 9}, {0, 4, 3}},
   {{5, 11, 4}, {0, 9, 1}},  {{1, 8, 0}, {7, 10, 6}},  {{6, 9, 7}, {3, 11, 2}},  {{2, 10, 3}, {4, 8, 5}}};
 
-// gts_isosurface_slice: the faces between two slices. In each cube, the
-// crossings are walked round in loops, and each loop of more than two is
-// fanned into faces from its first crossing.
+} // namespace
+
+// In each cube, the crossings are walked round in loops, and each loop of
+// more than two is fanned into faces from its first crossing.
 void isosurface_slice(Surface& s, IsoSlice& s1, IsoSlice& s2)
 {
+  if (s1.m_nx != s2.m_nx || s1.m_ny != s2.m_ny)
+    throw std::invalid_argument("gts::isosurface_slice: slices of different sizes");
   Geometrium& g = s.geometrium();
   IsoSlice* slices[2] = { &s1, &s2 };
-  for (unsigned j = 0; j + 1 < s1.nx; j++)
-    for (unsigned k = 0; k + 1 < s1.ny; k++)
+  for (unsigned j = 0; j + 1 < s1.m_nx; j++)
+    for (unsigned k = 0; k + 1 < s1.m_ny; k++)
     {
-      auto at = [&](unsigned e) -> Crossing& {
+      auto at = [&](unsigned e) -> IsoSlice::Crossing& {
         return slices[kCube[e][1]]->at(kCube[e][0], j + kCube[e][2], k + kCube[e][3]);
       };
       // GTS marked the visited vertices with their reserved pointer.
       bool visited[12] = {};
       for (unsigned l = 0; l < 12; l++)
       {
-        Crossing* va[12];
+        IsoSlice::Crossing* va[12];
         unsigned nv = 0, e = l;
-        Crossing* ov = &at(e);
+        IsoSlice::Crossing* ov = &at(e);
         while (ov->exists && ! visited[e])
         {
           va[nv++] = ov;
@@ -164,6 +175,8 @@ void isosurface_slice(Surface& s, IsoSlice& s1, IsoSlice& s2)
       }
     }
 }
+
+namespace {
 
 //==============================================================================
 // Tetrahedra, from isotetra.c
@@ -468,16 +481,16 @@ void isosurface_cartesian(Surface& s, CartesianGrid g, const PlaneFunc& f, doubl
 
   f(*f1, g, 0);
   f(*f2, g, 1);
-  slice_fill(*slice1, g, 0, *f1, f2, iso);
+  slice1->fill_cartesian(g, 0, *f1, f2, iso);
   for (unsigned k = 2; k < g.nz; k++)
   {
     f(*f1, g, k);
     std::swap(f1, f2);
-    slice_fill(*slice2, g, k - 1, *f1, f2, iso);
+    slice2->fill_cartesian(g, k - 1, *f1, f2, iso);
     isosurface_slice(s, *slice1, *slice2);
     std::swap(slice1, slice2);
   }
-  slice_fill(*slice2, g, g.nz - 1, *f2, nullptr, iso);
+  slice2->fill_cartesian(g, g.nz - 1, *f2, nullptr, iso);
   isosurface_slice(s, *slice1, *slice2);
 }
 

@@ -5,6 +5,7 @@
 
 #include "gts/Curvature.h"
 #include "gts/Stats.h"
+#include "gts/Topology.h"
 
 #include <algorithm>
 #include <cmath>
@@ -71,104 +72,6 @@ double region_area(const Geometrium& g, VertexId v, FaceId f)
   const Edge& e = g.edge(g.opposite_edge(f, v));
   return (cotan(g, e.v[0], v, e.v[1]) * distance2(pos(g, v), pos(g, e.v[1])) +
           cotan(g, e.v[1], v, e.v[0]) * distance2(pos(g, v), pos(g, e.v[0])))/8.0;
-}
-
-// gts_vertex_faces: the faces of s around v, in the order of GTS's list.
-std::vector<FaceId> vertex_faces(const Surface& s, VertexId v)
-{
-  const Geometrium& g = s.geometrium();
-  std::vector<FaceId> list;
-  for (EdgeId e : g.edges_of(v))
-    for (FaceId t : g.faces_of(e))
-      if (s.contains(t) && std::find(list.begin(), list.end(), t) == list.end())
-        list.push_back(t);
-  std::reverse(list.begin(), list.end());
-  return list;
-}
-
-// The edges of f in its order, starting from the edge opposite v when v is
-// the first vertex, rotated as gts_vertex_fan_oriented does: e2 is the edge
-// after v, e3 the one before it.
-void rotate_to(const Geometrium::VerticesEdges& ve, VertexId v, EdgeId& e2, EdgeId& e3)
-{
-  EdgeId e1 = ve.e[0];
-  e2 = ve.e[1];
-  e3 = ve.e[2];
-  if (v == ve.v[1])
-  {
-    e2 = e3;
-    e3 = e1;
-  }
-  else if (v == ve.v[2])
-  {
-    e3 = e2;
-    e2 = e1;
-  }
-}
-
-// gts_vertex_fan_oriented: the edges of v's fan in s, in the orientation of
-// its faces; empty where GTS returned NULL. Where GTS's recursion stopped on
-// a non-manifold edge or a wrongly oriented face, the list ends there.
-std::vector<EdgeId> fan_oriented(const Surface& s, VertexId v)
-{
-  const Geometrium& g = s.geometrium();
-  FaceId f;
-  unsigned d = 2;
-  for (EdgeId e : g.edges_of(v))
-  {
-    FaceId f1;
-    unsigned degree = 0;
-    for (FaceId t : g.faces_of(e))
-      if (s.contains(t)) { f1 = t; degree++; }
-    if ( ! f1.valid()) continue;
-    if (degree > 2) return {}; // non-manifold edge
-    if (degree == 1)
-    {
-      EdgeId e2, e3;
-      rotate_to(g.vertices_edges(f1), v, e2, e3);
-      if (e3 != e)
-      {
-        d = 1;
-        f = f1;
-      }
-    }
-    else if (degree <= d)
-      f = f1;
-  }
-  if ( ! f.valid()) return {};
-
-  EdgeId e2, e3;
-  rotate_to(g.vertices_edges(f), v, e2, e3);
-  std::vector<EdgeId> list{ e2 };
-
-  // edge_fan_list
-  const FaceId first = f;
-  EdgeId e = e3;
-  for (;;)
-  {
-    FaceId neighbor;
-    bool manifold = true;
-    for (FaceId f1 : g.faces_of(e))
-      if (f1 != f && s.contains(f1))
-      {
-        if (neighbor.valid()) { manifold = false; break; }
-        neighbor = f1;
-      }
-    if ( ! manifold || ! neighbor.valid() || neighbor == first) break;
-
-    const auto& E = g.face(neighbor).e;
-    EdgeId next, enext;
-    if      (E[0] == e) { next = E[1]; enext = E[2]; }
-    else if (E[1] == e) { next = E[2]; enext = E[0]; }
-    else                { next = E[0]; enext = E[1]; }
-    // checking for correct orientation
-    if (g.edge(enext).v[0] != v && g.edge(enext).v[1] != v) break;
-
-    list.push_back(next);
-    f = neighbor;
-    e = enext;
-  }
-  return list;
 }
 
 // Sum of region_area() over v's faces; the faces must be there.

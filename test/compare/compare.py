@@ -14,7 +14,8 @@ The "command", "status", "exit" and "glib_*" lines are not compared.
 
 Cases listed in ties.txt, next to this script, are reported but not counted
 as differences: there GTS breaks ties by memory address, and compare.sh
-checks their surfaces by distance instead.
+checks their surfaces by distance instead. Keys listed after the distance
+must agree all the same.
 
 A boolean case is degenerate when gts-cxx reports orientation tests that
 were exactly zero ("sos_ties"), so that Simulation of Simplicity decided
@@ -27,10 +28,15 @@ crashed. --classify DIR takes the sos_ties lines from the summaries in DIR,
 for comparisons where CXXDIR holds summaries the C library made of the C++
 surfaces.
 
+A case whose only difference is self_intersecting is degenerate in the
+same way when gts-cxx reports orientation tests of the self-intersection
+test that were exactly zero ("self_sos_ties"), as in a flat surface. It is
+counted as self-tied, not as a difference.
+
 Cases listed in fixed.txt are those where gts-cxx fixes an error of GTS,
 or departs from it on purpose.
 A difference there is not counted; the check given in fixed.txt must pass
-instead.
+instead. So it must where the C library crashes on such a case.
 
 Exits with 1 if any other case differs, a degenerate result is not valid,
 or the check of a fixed case fails.
@@ -75,11 +81,13 @@ def close(a, b, rtol):
 
 
 def ties():
+    """Tied cases, each with the keys that must agree all the same."""
     path = pathlib.Path(__file__).with_name("ties.txt")
-    names = set()
+    names = {}
     for line in path.read_text().splitlines():
         if line.strip() and not line.startswith("#"):
-            names.add(line.split()[0])
+            words = line.split()
+            names[words[0]] = words[2:]
     return names
 
 
@@ -96,6 +104,8 @@ def fixed():
 def check_fixed(check, r, c, diff_keys):
     """Runs the check of a fixed case; returns an error message or None."""
     kind, _, arg = check.partition(" ")
+    if kind == "ok":
+        return None if c.get("status", "").startswith("ok") else f"C++ status {c.get('status')}"
     if kind == "valid":
         if not c.get("status", "").startswith("ok"):
             return f"C++ status {c.get('status')}"
@@ -132,7 +142,7 @@ def main():
     tied = ties()
     fixes = fixed()
     n_same = n_diff = n_tie = n_unsupported = n_ref_crash = 0
-    n_degenerate = n_invalid = n_fixed = 0
+    n_degenerate = n_invalid = n_fixed = n_self_tie = 0
     one_sided = {}
     for cxx in sorted(cxx_dir.glob("*.txt")):
         ref = ref_dir / cxx.name
@@ -141,13 +151,24 @@ def main():
         r, c = parse(ref), parse(cxx)
         name = cxx.stem
         cls = classify_dir / cxx.name
-        sos = parse(cls).get("sos_ties", "0") if cls.exists() else "0"
+        cls_lines = parse(cls) if cls.exists() else {}
+        sos = cls_lines.get("sos_ties", "0")
+        self_sos = cls_lines.get("self_sos_ties", "0")
         degenerate = sos != "0"
         cxx_ok = c.get("status", "").startswith("ok")
         if c.get("status", "").startswith("unsupported"):
             n_unsupported += 1
             continue
         # Summaries made outside run-cases.sh have no exit line.
+        if r.get("exit", "0") not in ("0", "1") and name in fixes:
+            error = check_fixed(fixes[name], {}, c, [])
+            if error:
+                n_invalid += 1
+                print(f"INVALID {name}: C crashed, check '{fixes[name]}' failed: {error}")
+            else:
+                n_fixed += 1
+                print(f"FIXED {name}: C crashed ({r.get('exit')}), check '{fixes[name]}' passed")
+            continue
         if r.get("exit", "0") not in ("0", "1"):
             n_ref_crash += 1
             note = ""
@@ -182,6 +203,9 @@ def main():
             else:
                 n_fixed += 1
                 print(f"FIXED {name}: {len(diffs)} lines differ, check '{fixes[name]}' passed")
+        elif diffs and diff_keys == ["self_intersecting"] and self_sos != "0" and rs == cs:
+            n_self_tie += 1
+            print(f"SELF {name}: self_intersecting decided by {self_sos} ties")
         elif diffs and degenerate:
             n_degenerate += 1
             if cxx_ok and not valid(c):
@@ -189,7 +213,7 @@ def main():
                 print(f"INVALID {name}: degenerate ({sos} ties), C++ result not closed, manifold and orientable")
             else:
                 print(f"DEGEN {name}: {sos} ties, {len(diffs)} lines differ, C {rs}, C++ {cs}")
-        elif diffs and name in tied and rs == cs:
+        elif diffs and name in tied and rs == cs and not set(tied[name]) & set(diff_keys):
             n_tie += 1
             print(f"TIE  {name}: {len(diffs)} lines differ; compared by distance in compare.sh")
         elif diffs:
@@ -202,7 +226,7 @@ def main():
 
     for (key, side), n in sorted(one_sided.items()):
         print(f"note: '{key}' only from {side}, in {n} cases")
-    print(f"same {n_same}, different {n_diff}, tied {n_tie}, fixed {n_fixed}, degenerate {n_degenerate} "
+    print(f"same {n_same}, different {n_diff}, tied {n_tie}, self-tied {n_self_tie}, fixed {n_fixed}, degenerate {n_degenerate} "
           f"(invalid {n_invalid}), unsupported in C++ {n_unsupported}, "
           f"C crashed {n_ref_crash}  (rtol {rtol})")
     return 1 if n_diff or n_invalid else 0

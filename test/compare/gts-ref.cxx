@@ -9,6 +9,7 @@
 
 #include <gts.h>
 
+#include <array>
 #include <map>
 #include <algorithm>
 #include <cmath>
@@ -304,6 +305,70 @@ GtsSurface* make_iso(std::string_view algo, std::string_view func, guint n)
   return s;
 }
 
+// isoslice FUNC N: marching cubes through gts_iso_slice_fill, on the grid
+// of iso N with each point moved by warp_point(), so not cartesian.
+GtsPoint warp_point(guint i, guint j, guint k, double lo, double d)
+{
+  GtsPoint p;
+  p.x = lo + d*i + 0.15*d*std::sin(1.7*k + 0.3*j);
+  p.y = lo + d*j + 0.15*d*std::cos(2.3*i);
+  p.z = lo + d*k + 0.15*d*std::sin(1.1*j + 0.5*i);
+  return p;
+}
+
+GtsSurface* make_isoslice(std::string_view func, guint n)
+{
+  field_t f; double iso;
+  if      (func == "sphere") { f = field_sphere; iso = 1;    }
+  else if (func == "torus")  { f = field_torus;  iso = 0.09; }
+  else if (func == "blobs")  { f = field_blobs;  iso = 4;    }
+  else fail("FUNC must be sphere, torus or blobs");
+
+  const double lo = -1.25, d = 2.5 / n;
+  const guint m = n + 1;
+  GtsGridPlane* planes[2] = { gts_grid_plane_new(m, m), gts_grid_plane_new(m, m) };
+  gdouble** values[2];
+  for (auto& v : values)
+  {
+    v = g_new(gdouble*, m);
+    for (guint i = 0; i < m; ++i) v[i] = g_new(gdouble, m);
+  }
+  auto fill_plane = [&](int w, guint k) {
+    for (guint i = 0; i < m; ++i)
+      for (guint j = 0; j < m; ++j)
+      {
+        const GtsPoint p = warp_point(i, j, k, lo, d);
+        planes[w]->p[i][j] = p;
+        values[w][i][j] = f(p.x, p.y, p.z);
+      }
+  };
+  GtsSurface* s = new_surface();
+  GtsIsoSlice* slices[2] = { gts_iso_slice_new(m, m), gts_iso_slice_new(m, m) };
+  // As gts_isosurface_cartesian, with planes and values swapped by index.
+  int a = 0, b = 1;
+  fill_plane(a, 0);
+  fill_plane(b, 1);
+  gts_iso_slice_fill(slices[0], planes[a], planes[b], values[a], values[b], iso, s->vertex_class);
+  for (guint k = 2; k < m; ++k)
+  {
+    std::swap(a, b);
+    fill_plane(b, k);
+    gts_iso_slice_fill(slices[1], planes[a], planes[b], values[a], values[b], iso, s->vertex_class);
+    gts_isosurface_slice(slices[0], slices[1], s);
+    std::swap(slices[0], slices[1]);
+  }
+  gts_iso_slice_fill(slices[1], planes[b], nullptr, values[b], nullptr, iso, s->vertex_class);
+  gts_isosurface_slice(slices[0], slices[1], s);
+  for (auto* x : slices) gts_iso_slice_destroy(x);
+  for (auto* x : planes) gts_grid_plane_destroy(x);
+  for (auto& v : values)
+  {
+    for (guint i = 0; i < m; ++i) g_free(v[i]);
+    g_free(v);
+  }
+  return s;
+}
+
 //==============================================================================
 // Booleans, as in GTSBoolOpHelper with post-processing off
 //==============================================================================
@@ -546,6 +611,409 @@ void centers_cmd(GtsSurface* s)
   g_slist_free(bnd);
 }
 
+//==============================================================================
+// Delaunay triangulation, as GTS's example delaunay.c
+//==============================================================================
+
+struct DelaunayArgs
+{
+  bool constraints = true, keep_hull = true, holes = false, conform = false, refine = false, hull_constraints = false;
+  int    steiner_max = -1;
+  double quality = 0., area = G_MAXDOUBLE;
+};
+
+DelaunayArgs parse_delaunay(std::span<char*> a)
+{
+  DelaunayArgs r;
+  for (std::string_view x : a)
+  {
+    if      (x == "noconst") r.constraints = false;
+    else if (x == "nohull")  r.keep_hull = false;
+    else if (x == "holes")   r.holes = true;
+    else if (x == "conform") r.conform = true;
+    else if (x == "hullconst") r.hull_constraints = true;
+    else if (x.starts_with("steiner=")) r.steiner_max = std::atoi(x.data() + 8);
+    else if (x.starts_with("quality=")) { r.conform = r.refine = true; r.quality = std::atof(x.data() + 8); }
+    else if (x.starts_with("area="))    { r.conform = r.refine = true; r.area = std::atof(x.data() + 5); }
+    else fail(std::string("unknown delaunay option ") + std::string(x));
+  }
+  return r;
+}
+
+gdouble delaunay_triangle_cost(GtsTriangle* t, gpointer* data)
+{
+  const gdouble quality = gts_triangle_quality(t), area = gts_triangle_area(t);
+  if (quality < *(gdouble*) data[0] || area > *(gdouble*) data[1])
+    return quality;
+  return 0.;
+}
+
+gboolean triangle_is_hole(GtsTriangle* t)
+{
+  GtsEdge *e1, *e2, *e3;
+  GtsVertex *v1, *v2, *v3;
+  gts_triangle_vertices_edges(t, nullptr, &v1, &v2, &v3, &e1, &e2, &e3);
+  return (GTS_IS_CONSTRAINT(e1) && GTS_SEGMENT(e1)->v1 != v1) ||
+         (GTS_IS_CONSTRAINT(e2) && GTS_SEGMENT(e2)->v1 != v2) ||
+         (GTS_IS_CONSTRAINT(e3) && GTS_SEGMENT(e3)->v1 != v3);
+}
+
+// delaunay IN [noconst] [nohull] [holes] [conform] [steiner=N] [quality=Q] [area=A]
+// IN is as delaunay.c reads it: "nv ne nf", nv vertices, ne edges; faces
+// are ignored.
+GtsSurface* delaunay_cmd(const char* path, const DelaunayArgs& o)
+{
+  FILE* fp = std::fopen(path, "r");
+  if ( ! fp) fail(std::string("cannot open ") + path);
+  unsigned nv, ne, nf;
+  if (std::fscanf(fp, "%u %u %u", &nv, &ne, &nf) != 3) fail("bad header");
+  std::vector<GtsVertex*> vertices(nv);
+  for (auto& v : vertices)
+  {
+    double x, y, z;
+    if (std::fscanf(fp, "%lf %lf %lf", &x, &y, &z) != 3) fail("bad vertex");
+    v = gts_vertex_new(gts_vertex_class(), x, y, z);
+  }
+  std::vector<GtsEdge*> edges(ne);
+  for (auto& e : edges)
+  {
+    unsigned a, b;
+    if (std::fscanf(fp, "%u %u", &a, &b) != 2 || a < 1 || a > nv || b < 1 || b > nv) fail("bad edge");
+    e = gts_edge_new(o.constraints ? GTS_EDGE_CLASS(gts_constraint_class()) : gts_edge_class(),
+                     vertices[a - 1], vertices[b - 1]);
+  }
+  std::fclose(fp);
+
+  GSList* list = nullptr;
+  for (GtsVertex* v : vertices) list = g_slist_prepend(list, v);
+  GtsTriangle* t = gts_triangle_enclosing(gts_triangle_class(), list, 100.);
+  g_slist_free(list);
+  GtsVertex *v1, *v2, *v3;
+  gts_triangle_vertices(t, &v1, &v2, &v3);
+  GtsSurface* s = new_surface();
+  gts_surface_add_face(s, gts_face_new(gts_face_class(), t->e1, t->e2, t->e3));
+
+  unsigned n_duplicate = 0;
+  for (GtsVertex* v : vertices)
+    if (GtsVertex* d = gts_delaunay_add_vertex(s, v, nullptr))
+    {
+      ++n_duplicate;
+      gts_vertex_replace(v, d);
+    }
+  std::println("delaunay_duplicates {}", n_duplicate);
+
+  if (o.constraints)
+  {
+    unsigned n_conflicts = 0;
+    for (GtsEdge* e : edges)
+    {
+      GSList* c = gts_delaunay_add_constraint(s, GTS_CONSTRAINT(e));
+      n_conflicts += g_slist_length(c);
+      g_slist_free(c);
+    }
+    std::println("delaunay_conflicts {}", n_conflicts);
+  }
+
+  gts_allow_floating_vertices = TRUE;
+  gts_object_destroy(GTS_OBJECT(v1));
+  gts_object_destroy(GTS_OBJECT(v2));
+  gts_object_destroy(GTS_OBJECT(v3));
+  gts_allow_floating_vertices = FALSE;
+
+  if ( ! o.keep_hull) gts_delaunay_remove_hull(s);
+  if (o.hull_constraints)
+  {
+    GSList* b = gts_surface_boundary(s);
+    for (GSList* i = b; i; i = i->next) GTS_OBJECT(i->data)->klass = GTS_OBJECT_CLASS(gts_constraint_class());
+    g_slist_free(b);
+  }
+  if (o.holes)
+    std::println("delaunay_holes {}", gts_surface_foreach_face_remove(s, (GtsFunc) triangle_is_hole, nullptr));
+
+  if (o.conform)
+  {
+    const guint encroached = gts_delaunay_conform(s, o.steiner_max, (GtsEncroachFunc) gts_vertex_encroaches_edge, nullptr);
+    std::println("delaunay_encroached {}", encroached);
+    if (encroached == 0 && o.refine)
+    {
+      gdouble quality = o.quality, area = o.area;
+      gpointer data[2] = { &quality, &area };
+      const guint unrefined = gts_delaunay_refine(s, o.steiner_max, (GtsEncroachFunc) gts_vertex_encroaches_edge, nullptr,
+                                                  (GtsKeyFunc) delaunay_triangle_cost, data);
+      std::println("delaunay_unrefined {}", unrefined);
+    }
+  }
+  std::println("delaunay_check {}", gts_delaunay_check(s) ? 1 : 0);
+  return s;
+}
+
+//==============================================================================
+// Triangle strips
+//==============================================================================
+
+// Whether the faces make a chain of vertices s0, s1, ... with face k on
+// s_k, s_k+1 and s_k+2, as a triangle strip is drawn.
+bool strip_chain(const std::vector<std::array<void*, 3>>& f)
+{
+  if (f.size() < 2) return true;
+  auto in = [](void* v, const std::array<void*, 3>& t) { return v == t[0] || v == t[1] || v == t[2]; };
+  std::vector<void*> shared, sq;
+  for (void* v : f[0]) if (in(v, f[1])) shared.push_back(v); else sq.push_back(v);
+  if (shared.size() != 2 || sq.size() != 1) return false;
+  if (f.size() > 2 && in(shared[0], f[2])) std::swap(shared[0], shared[1]);
+  sq.push_back(shared[0]);
+  sq.push_back(shared[1]);
+  for (std::size_t k = 1; k < f.size(); ++k)
+  {
+    if ( ! in(sq[k], f[k]) || ! in(sq[k + 1], f[k])) return false;
+    void* next = nullptr;
+    for (void* v : f[k]) if (v != sq[k] && v != sq[k + 1]) next = v;
+    sq.push_back(next);
+  }
+  return true;
+}
+
+// strip IN: the number of strips, their lengths, and whether they cover
+// every face once with consecutive faces sharing an edge, as a chain.
+void strip_cmd(GtsSurface* s)
+{
+  GSList* strips = gts_surface_strip(s);
+  GHashTable* seen = g_hash_table_new(nullptr, nullptr);
+  GtsRange len;
+  gts_range_init(&len);
+  bool cover = true, adjacent = true, chain = true;
+  guint n = 0, total = 0;
+  for (GSList* i = strips; i; i = i->next, ++n)
+  {
+    GSList* strip = (GSList*) i->data;
+    gts_range_add_value(&len, g_slist_length(strip));
+    std::vector<std::array<void*, 3>> faces;
+    for (GSList* j = strip; j; j = j->next)
+    {
+      GtsVertex *v1, *v2, *v3;
+      gts_triangle_vertices((GtsTriangle*) j->data, &v1, &v2, &v3);
+      faces.push_back({ v1, v2, v3 });
+    }
+    if ( ! strip_chain(faces)) chain = false;
+    for (GSList* j = strip; j; j = j->next, ++total)
+    {
+      if (g_hash_table_lookup(seen, j->data)) cover = false;
+      g_hash_table_insert(seen, j->data, j->data);
+      if (j->next && ! gts_triangles_common_edge((GtsTriangle*) j->data, (GtsTriangle*) j->next->data))
+        adjacent = false;
+    }
+    g_slist_free(strip);
+  }
+  g_slist_free(strips);
+  gts_range_update(&len);
+  if (total != gts_surface_face_number(s)) cover = false;
+  g_hash_table_destroy(seen);
+  std::println("strips {}", n);
+  std::println("strip_faces {}", total);
+  std::println("strip_cover {}", cover ? 1 : 0);
+  std::println("strip_adjacent {}", adjacent ? 1 : 0);
+  std::println("strip_chain {}", chain ? 1 : 0);
+  std::println("strip_length n={} min={:.12e} mean={:.12e} max={:.12e}", len.n, len.min, len.mean, len.max);
+}
+
+//==============================================================================
+// Progressive and hierarchical surfaces
+//==============================================================================
+
+// One line for the surface at the level of a progressive surface.
+void print_level(const char* what, guint level, GtsSurface* s)
+{
+  std::println("{}-{} vertices={} edges={} faces={} area={:.12e} volume={:.12e} closed={} manifold={} orientable={}",
+               what, level, gts_surface_vertex_number(s), gts_surface_edge_number(s), gts_surface_face_number(s),
+               gts_surface_area(s), gts_surface_volume(s), gts_surface_is_closed(s) ? 1 : 0,
+               gts_surface_is_manifold(s) ? 1 : 0, gts_surface_is_orientable(s) ? 1 : 0);
+}
+
+GtsPSurface* make_psurface(GtsSurface* s, guint min_edges)
+{
+  return gts_psurface_new(gts_psurface_class(), s, gts_split_class(), nullptr, nullptr, nullptr, nullptr,
+                          (GtsStopFunc) gts_coarsen_stop_number, &min_edges, std::numbers::pi / 180);
+}
+
+// psurface IN MIN_EDGES LEVEL...: the levels, then the finest level.
+void psurface_levels(GtsPSurface* ps, std::span<char*> levels)
+{
+  std::println("psurface min={} max={}", gts_psurface_min_vertex_number(ps), gts_psurface_max_vertex_number(ps));
+  for (char* l : levels)
+  {
+    const guint n = std::strtoul(l, nullptr, 10);
+    gts_psurface_set_vertex_number(ps, n);
+    print_level("level", n, ps->s);
+  }
+  gts_psurface_set_vertex_number(ps, gts_psurface_max_vertex_number(ps));
+}
+
+GtsSurface* psurface_read_cmd(const char* path, std::span<char*> levels)
+{
+  FILE* fp = std::fopen(path, "r");
+  if ( ! fp) fail(std::string("cannot open ") + path);
+  GtsFile* f = gts_file_new(fp);
+  GtsSurface* s = new_surface();
+  GtsPSurface* ps = gts_psurface_open(gts_psurface_class(), s, gts_split_class(), f);
+  if ( ! ps) fail(std::string("cannot read ") + path + ": " + (f->error ? f->error : "?"));
+  while (gts_psurface_read_vertex(ps, f)) {}
+  if (f->type == GTS_ERROR) fail(std::string("cannot read ") + path + ": " + f->error);
+  gts_psurface_close(ps);
+  gts_file_destroy(f);
+  std::fclose(fp);
+  psurface_levels(ps, levels);
+  return s;
+}
+
+gdouble split_x(GtsSplit* vs) { return GTS_POINT(vs->v)->x; }
+
+// hsurface IN MIN_EDGES N: a hierarchical surface, keyed by the x of the
+// split's vertex; N expansions of the top, then N collapses.
+GtsSurface* hsurface_cmd(GtsSurface* s, guint min_edges, guint n)
+{
+  GtsPSurface* ps = make_psurface(s, min_edges);
+  GtsHSurface* hs = gts_hsurface_new(gts_hsurface_class(), gts_hsplit_class(), ps,
+                                     (GtsKeyFunc) split_x, nullptr, (GtsKeyFunc) split_x, nullptr);
+  std::println("hsurface height={} vertices={}", gts_hsurface_height(hs), hs->nvertex);
+  // From the coarsest level, as many expansions as asked.
+  while (GtsHSplit* top = (GtsHSplit*) gts_eheap_top(hs->collapsable, nullptr))
+    gts_hsplit_collapse(top, hs);
+  print_level("coarsest", hs->nvertex, s);
+  for (guint i = 0; i < n; ++i)
+  {
+    GtsHSplit* top = (GtsHSplit*) gts_eheap_top(hs->expandable, nullptr);
+    if ( ! top) break;
+    gts_hsplit_expand(top, hs);
+  }
+  print_level("expanded", hs->nvertex, s);
+  for (guint i = 0; i < n / 2; ++i)
+  {
+    GtsHSplit* top = (GtsHSplit*) gts_eheap_top(hs->collapsable, nullptr);
+    if ( ! top) break;
+    gts_hsplit_collapse(top, hs);
+  }
+  print_level("collapsed", hs->nvertex, s);
+  while (GtsHSplit* top = (GtsHSplit*) gts_eheap_top(hs->expandable, nullptr))
+    gts_hsplit_expand(top, hs);
+  return s;
+}
+
+//==============================================================================
+// Graphs and partitions
+//==============================================================================
+
+void count_node(GtsGNode*, guint* n) { ++*n; }
+void count_gedge(GtsGEdge*, guint* n) { ++*n; }
+
+struct DegreeArg { GtsGraph* g; GtsRange* r; };
+void add_degree(GtsGNode* n, DegreeArg* a) { gts_range_add_value(a->r, gts_gnode_degree(n, a->g)); }
+
+void graph_stats(GtsGraph* g)
+{
+  guint ne = 0;
+  gts_graph_foreach_edge(g, (GtsFunc) count_gedge, &ne);
+  GtsRange degree;
+  gts_range_init(&degree);
+  DegreeArg a{ g, &degree };
+  gts_container_foreach(GTS_CONTAINER(g), (GtsFunc) add_degree, &a);
+  gts_range_update(&degree);
+  std::println("graph nodes={} edges={} weight={:.6e}", gts_container_size(GTS_CONTAINER(g)), ne, gts_graph_weight(g));
+  print_range("graph_degree", degree);
+}
+
+// The parts: their number, the nodes in all, whether each node of g is in
+// exactly one, the edges cut and the balance.
+struct CoverArg { GSList* parts; bool ok; };
+void check_cover(GtsGNode* n, CoverArg* a)
+{
+  guint k = 0;
+  for (GSList* i = a->parts; i; i = i->next)
+    if (gts_containee_is_contained(GTS_CONTAINEE(n), GTS_CONTAINER(i->data))) ++k;
+  if (k != 1) a->ok = false;
+}
+
+void partition_stats(GtsGraph* g, GSList* parts)
+{
+  guint n = 0;
+  GtsRange size;
+  gts_range_init(&size);
+  for (GSList* i = parts; i; i = i->next)
+  {
+    const guint k = gts_container_size(GTS_CONTAINER(i->data));
+    n += k;
+    gts_range_add_value(&size, k);
+  }
+  gts_range_update(&size);
+  CoverArg c{ parts, true };
+  gts_container_foreach(GTS_CONTAINER(g), (GtsFunc) check_cover, &c);
+  std::println("parts {}", g_slist_length(parts));
+  std::println("parts_nodes {}", n);
+  std::println("parts_cover {}", c.ok ? 1 : 0);
+  std::println("parts_cut {}", gts_graph_partition_edges_cut(parts));
+  std::println("parts_balance {:.6e}", gts_graph_partition_balance(parts));
+  print_range("parts_size", size);
+}
+
+// graph IN WHAT ARGS...: the dual graph of IN, and
+//   stats | bubble NP NITER | bisect ggg|bfgg NTRY [kl|bkl MMAX] | recursive N | pgraph MIN
+void graph_cmd(GtsSurface* s, std::span<char*> a)
+{
+  GtsGraph* g = gts_surface_graph_new(GTS_GRAPH_CLASS(gts_wgraph_class()), s);
+  graph_stats(g);
+  const std::string_view what = a[0];
+  if (what == "bubble" && a.size() == 3)
+  {
+    GSList* parts = gts_graph_bubble_partition(g, std::strtoul(a[1], nullptr, 10), std::strtoul(a[2], nullptr, 10),
+                                               nullptr, nullptr);
+    partition_stats(g, parts);
+  }
+  else if (what == "bisect" && (a.size() == 3 || a.size() == 5))
+  {
+    const guint ntry = std::strtoul(a[2], nullptr, 10);
+    GtsGraphBisection* bg = std::string_view(a[1]) == "ggg" ? gts_graph_ggg_bisection(g, ntry)
+                                                              : gts_graph_bfgg_bisection(g, ntry);
+    if (a.size() == 5)
+    {
+      const guint mmax = std::strtoul(a[4], nullptr, 10);
+      if (std::string_view(a[3]) == "kl") gts_graph_bisection_kl_refine(bg, mmax);
+      else while (gts_graph_bisection_bkl_refine(bg, mmax, 0.1)) {}
+    }
+    std::println("bisection_check {}", gts_graph_bisection_check(bg) ? 1 : 0);
+    GSList* parts = g_slist_prepend(g_slist_prepend(nullptr, bg->g2), bg->g1);
+    partition_stats(g, parts);
+  }
+  else if (what == "recursive" && a.size() == 2)
+  {
+    GSList* parts = gts_graph_recursive_bisection(GTS_WGRAPH(g), std::strtoul(a[1], nullptr, 10), 10, 50, 100, 0.1);
+    partition_stats(g, parts);
+  }
+  else if (what == "pgraph" && a.size() == 2)
+  {
+    GtsPGraph* pg = gts_pgraph_new(gts_pgraph_class(), g, gts_gnode_split_class(), gts_wgnode_class(),
+                                   gts_wgedge_class(), std::strtoul(a[1], nullptr, 10));
+    std::println("pgraph min={} max={} levels={}", gts_pgraph_min_node_number(pg), gts_pgraph_max_node_number(pg),
+                 pg->levels->len);
+    graph_stats(g);
+    gts_pgraph_set_node_number(pg, gts_pgraph_max_node_number(pg));
+    graph_stats(g);
+  }
+  else if (what == "io")
+  {
+    // Written, then read back.
+    FILE* fp = std::tmpfile();
+    gts_graph_write(g, fp);
+    std::rewind(fp);
+    GtsFile* f = gts_file_new(fp);
+    GtsGraph* g1 = gts_graph_read(f);
+    if ( ! g1) fail(std::format("cannot read the graph back: {}:{}: {}", f->line, f->pos, f->error ? f->error : "?"));
+    graph_stats(g1);
+    gts_file_destroy(f);
+    std::fclose(fp);
+  }
+  else if (what != "stats")
+    fail("graph: WHAT must be stats, bubble, bisect, recursive, pgraph or io");
+}
+
 void usage()
 {
   std::print(stderr,
@@ -558,6 +1026,14 @@ void usage()
     "  tessellate IN ORDER [mid]\n"
     "  sphere     ORDER\n"
     "  iso        ALGO FUNC N\n"
+    "  isoslice   FUNC N           marching cubes on a warped grid, through the slice API\n"
+    "  strip      IN               triangle strips\n"
+    "  psurface   IN MIN_EDGES LEVEL...    progressive surface at levels, then at the finest\n"
+    "  psurface-write IN MIN_EDGES OUT     writes the progressive surface\n"
+    "  psurface-read  PSURF LEVEL...       reads one\n"
+    "  hsurface   IN MIN_EDGES N           hierarchical surface: N expansions, N/2 collapses\n"
+    "  graph      IN stats|bubble NP NITER|bisect ggg|bfgg NTRY [kl|bkl MMAX]|recursive N|pgraph MIN|io\n"
+    "  jostle     GRAPH N          a graph in the Jostle format, in 2^N parts\n"
     "               ALGO: cartesian | tetra | tetra_bounded | tetra_bcl\n"
     "               FUNC: sphere | torus | blobs, on [-1.25, 1.25]^3 with N cells per axis\n"
     "  bool       OP A B           OP: union | inter | diff\n"
@@ -566,7 +1042,8 @@ void usage()
     "  curvature  IN               curvature at each vertex\n"
     "  inside     IN N             inside, distance and closest point on an N^3 grid\n"
     "  merge      IN EPS           faces on vertices of their own, merged back\n"
-    "  centers    IN               centres of mass and area, boundary\n");
+    "  centers    IN               centres of mass and area, boundary\n"
+    "  delaunay   IN [noconst] [nohull] [holes] [hullconst] [conform] [steiner=N] [quality=Q] [area=A]\n");
   std::exit(2);
 }
 
@@ -684,6 +1161,60 @@ int main(int argc, char* argv[])
     GtsSurface* in = read_surface(a[0]);
     centers_cmd(in);
     gts_object_destroy(GTS_OBJECT(in));
+  }
+  else if (cmd == "psurface" && a.size() >= 2)
+  {
+    s = read_surface(a[0]);
+    GtsPSurface* ps = make_psurface(s, std::strtoul(a[1], nullptr, 10));
+    psurface_levels(ps, a.subspan(2));
+  }
+  else if (cmd == "psurface-write" && a.size() == 3)
+  {
+    s = read_surface(a[0]);
+    GtsPSurface* ps = make_psurface(s, std::strtoul(a[1], nullptr, 10));
+    FILE* fp = std::fopen(a[2], "w");
+    if ( ! fp) fail(std::string("cannot write ") + a[2]);
+    gts_psurface_write(ps, fp);
+    std::fclose(fp);
+  }
+  else if (cmd == "psurface-read" && a.size() >= 1)
+  {
+    s = psurface_read_cmd(a[0], a.subspan(1));
+  }
+  else if (cmd == "hsurface" && a.size() == 3)
+  {
+    s = hsurface_cmd(read_surface(a[0]), std::strtoul(a[1], nullptr, 10), std::strtoul(a[2], nullptr, 10));
+  }
+  else if (cmd == "jostle" && a.size() == 2)
+  {
+    FILE* fp = std::fopen(a[0], "r");
+    if ( ! fp) fail(std::string("cannot open ") + a[0]);
+    GtsFile* f = gts_file_new(fp);
+    GtsGraph* g = gts_graph_new(GTS_GRAPH_CLASS(gts_wgraph_class()), gts_gnode_class(), gts_gedge_class());
+    if (gts_graph_read_jostle(g, f)) fail(std::format("cannot read {}: {}:{}: {}", a[0], f->line, f->pos, f->error));
+    gts_file_destroy(f);
+    std::fclose(fp);
+    graph_stats(g);
+    GSList* parts = gts_graph_recursive_bisection(GTS_WGRAPH(g), std::strtoul(a[1], nullptr, 10), 10, 50, 100, 0.1);
+    partition_stats(g, parts);
+  }
+  else if (cmd == "graph" && a.size() >= 2)
+  {
+    GtsSurface* in = read_surface(a[0]);
+    graph_cmd(in, a.subspan(1));
+  }
+  else if (cmd == "strip" && a.size() == 1)
+  {
+    s = read_surface(a[0]);
+    strip_cmd(s);
+  }
+  else if (cmd == "isoslice" && a.size() == 2)
+  {
+    s = make_isoslice(a[0], std::strtoul(a[1], nullptr, 10));
+  }
+  else if (cmd == "delaunay" && a.size() >= 1)
+  {
+    s = delaunay_cmd(a[0], parse_delaunay(a.subspan(1)));
   }
   else
   {

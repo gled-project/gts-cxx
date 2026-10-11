@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <format>
+#include <ostream>
 
 namespace gts {
 
@@ -187,8 +189,7 @@ void BBTree::traverse(const BBTree& a, int na, const BBTree& b, int nb, const st
 // Queries by point
 //==============================================================================
 
-// gts_bbox_is_stabbed
-static bool is_stabbed(const BBox& b, Vec3 p)
+bool is_stabbed(const BBox& b, Vec3 p)
 {
   return ! (p.x > b.max.x || p.y < b.min.y || p.y > b.max.y || p.z < b.min.z || p.z > b.max.z);
 }
@@ -289,6 +290,171 @@ Vec3 BBTree::point_closest(Vec3 p, const ClosestFunc& c, double* distance2) cons
   }
   if (distance2) *distance2 = dmin;
   return np;
+}
+
+//==============================================================================
+// Queries by box
+//==============================================================================
+
+std::vector<BBLeaf> BBTree::overlap(const BBox& b) const
+{
+  std::vector<BBLeaf> list;
+  if (m_root >= 0) overlap(m_root, b, list);
+  return list;
+}
+
+void BBTree::overlap(int n, const BBox& b, std::vector<BBLeaf>& list) const
+{
+  const Node& node = m_nodes[n];
+  if ( ! overlapping(b, node.box)) return;
+  if (node.child[0] < 0) { list.push_back(node.leaf); return; }
+  for (int c : node.child) overlap(c, b, list);
+}
+
+bool BBTree::is_overlapping(const BBox& b) const
+{
+  return m_root >= 0 && is_overlapping(m_root, b);
+}
+
+bool BBTree::is_overlapping(int n, const BBox& b) const
+{
+  const Node& node = m_nodes[n];
+  if ( ! overlapping(b, node.box)) return false;
+  if (node.child[0] < 0) return true;
+  for (int c : node.child)
+    if (is_overlapping(c, b)) return true;
+  return false;
+}
+
+//==============================================================================
+// Box and triangle, from GTS's tribox3.c
+//==============================================================================
+//
+// AABB-triangle overlap test by Tomas Akenine-Möller (2001), changed from
+// float to double by Stéphane Popinet (2004), who kept fabsf(), which
+// rounds the edge components to float; see QUIRKS.md.
+
+namespace {
+
+bool plane_box_overlap(const double normal[3], const double vert[3], const double maxbox[3])
+{
+  double vmin[3], vmax[3];
+  for (int q = 0; q < 3; q++)
+  {
+    const double v = vert[q];
+    if (normal[q] > 0.0) { vmin[q] = -maxbox[q] - v; vmax[q] =  maxbox[q] - v; }
+    else                 { vmin[q] =  maxbox[q] - v; vmax[q] = -maxbox[q] - v; }
+  }
+  auto dot = [](const double* a, const double* b) { return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]; };
+  if (dot(normal, vmin) > 0.0) return false;
+  return dot(normal, vmax) >= 0.0;
+}
+
+bool tri_box_overlap(const double boxcenter[3], const double boxhalfsize[3], const double triverts[3][3])
+{
+  enum { X, Y, Z };
+  double v0[3], v1[3], v2[3], e0[3], e1[3], e2[3];
+  for (int k = 0; k < 3; ++k)
+  {
+    v0[k] = triverts[0][k] - boxcenter[k];
+    v1[k] = triverts[1][k] - boxcenter[k];
+    v2[k] = triverts[2][k] - boxcenter[k];
+  }
+  for (int k = 0; k < 3; ++k)
+  {
+    e0[k] = v1[k] - v0[k];
+    e1[k] = v2[k] - v1[k];
+    e2[k] = v0[k] - v2[k];
+  }
+  const double* h = boxhalfsize;
+  double min, max, p0, p1, p2, rad;
+  auto out = [&] { return min > rad || max < -rad; };
+  auto minmax = [&](double a, double b) { if (a < b) { min = a; max = b; } else { min = b; max = a; } };
+
+  // AXISTEST_X01, X2, Y02, Y1, Z12 and Z0 of the original.
+  auto x01 = [&](double a, double b, double fa, double fb) {
+    p0 = a*v0[Y] - b*v0[Z]; p2 = a*v2[Y] - b*v2[Z]; minmax(p0, p2); rad = fa*h[Y] + fb*h[Z]; return out(); };
+  auto x2 = [&](double a, double b, double fa, double fb) {
+    p0 = a*v0[Y] - b*v0[Z]; p1 = a*v1[Y] - b*v1[Z]; minmax(p0, p1); rad = fa*h[Y] + fb*h[Z]; return out(); };
+  auto y02 = [&](double a, double b, double fa, double fb) {
+    p0 = -a*v0[X] + b*v0[Z]; p2 = -a*v2[X] + b*v2[Z]; minmax(p0, p2); rad = fa*h[X] + fb*h[Z]; return out(); };
+  auto y1 = [&](double a, double b, double fa, double fb) {
+    p0 = -a*v0[X] + b*v0[Z]; p1 = -a*v1[X] + b*v1[Z]; minmax(p0, p1); rad = fa*h[X] + fb*h[Z]; return out(); };
+  auto z12 = [&](double a, double b, double fa, double fb) {
+    p1 = a*v1[X] - b*v1[Y]; p2 = a*v2[X] - b*v2[Y];
+    if (p2 < p1) { min = p2; max = p1; } else { min = p1; max = p2; }
+    rad = fa*h[X] + fb*h[Y]; return out(); };
+  auto z0 = [&](double a, double b, double fa, double fb) {
+    p0 = a*v0[X] - b*v0[Y]; p1 = a*v1[X] - b*v1[Y]; minmax(p0, p1); rad = fa*h[X] + fb*h[Y]; return out(); };
+
+  // The nine cross products of the edges with the axes.
+  double fex = std::fabs(float(e0[X])), fey = std::fabs(float(e0[Y])), fez = std::fabs(float(e0[Z]));
+  if (x01(e0[Z], e0[Y], fez, fey) || y02(e0[Z], e0[X], fez, fex) || z12(e0[Y], e0[X], fey, fex)) return false;
+  fex = std::fabs(float(e1[X])); fey = std::fabs(float(e1[Y])); fez = std::fabs(float(e1[Z]));
+  if (x01(e1[Z], e1[Y], fez, fey) || y02(e1[Z], e1[X], fez, fex) || z0(e1[Y], e1[X], fey, fex)) return false;
+  fex = std::fabs(float(e2[X])); fey = std::fabs(float(e2[Y])); fez = std::fabs(float(e2[Z]));
+  if (x2(e2[Z], e2[Y], fez, fey) || y1(e2[Z], e2[X], fez, fex) || z12(e2[Y], e2[X], fey, fex)) return false;
+
+  // The axes: the box of the triangle against the box.
+  for (int k = 0; k < 3; ++k)
+  {
+    min = max = v0[k];
+    if (v1[k] < min) min = v1[k];
+    if (v1[k] > max) max = v1[k];
+    if (v2[k] < min) min = v2[k];
+    if (v2[k] > max) max = v2[k];
+    if (min > h[k] || max < -h[k]) return false;
+  }
+
+  // The plane of the triangle.
+  const double normal[3] = { e0[1]*e1[2] - e0[2]*e1[1], e0[2]*e1[0] - e0[0]*e1[2], e0[0]*e1[1] - e0[1]*e1[0] };
+  return plane_box_overlap(normal, v0, h);
+}
+
+bool overlaps(const BBox& b, Vec3 p1, Vec3 p2, Vec3 p3)
+{
+  const double bc[3] = { (b.max.x + b.min.x)/2., (b.max.y + b.min.y)/2., (b.max.z + b.min.z)/2. };
+  const double bh[3] = { (b.max.x - b.min.x)/2., (b.max.y - b.min.y)/2., (b.max.z - b.min.z)/2. };
+  const double tv[3][3] = { { p1.x, p1.y, p1.z }, { p2.x, p2.y, p2.z }, { p3.x, p3.y, p3.z } };
+  return tri_box_overlap(bc, bh, tv);
+}
+
+} // namespace
+
+bool overlaps(const BBox& b, const Triangle& t) { return overlaps(b, t.a, t.b, t.c); }
+bool overlaps(const BBox& b, const Segment& s)  { return overlaps(b, s.a, s.b, s.a); }
+
+//==============================================================================
+// Drawing
+//==============================================================================
+
+void write_oogl(const BBox& b, std::ostream& out)
+{
+  out << "OFF 8 6 12\n";
+  const double x[2] = { b.min.x, b.max.x }, y[2] = { b.min.y, b.max.y }, z[2] = { b.min.z, b.max.z };
+  const int c[8][3] = { {0,0,0}, {1,0,0}, {1,1,0}, {0,1,0}, {0,0,1}, {1,0,1}, {1,1,1}, {0,1,1} };
+  for (const auto& k : c) out << std::format("{:g} {:g} {:g}\n", x[k[0]], y[k[1]], z[k[2]]);
+  out << "4 3 2 1 0\n"
+         "4 4 5 6 7\n"
+         "4 2 3 7 6\n"
+         "4 0 1 5 4\n"
+         "4 0 4 7 3\n"
+         "4 1 2 6 5\n";
+}
+
+void BBTree::write_oogl(unsigned depth, std::ostream& out) const
+{
+  out << "{ LIST";
+  if (m_root >= 0) write_oogl(m_root, 1, depth, out);
+  out << "}\n";
+}
+
+void BBTree::write_oogl(int n, unsigned d, unsigned depth, std::ostream& out) const
+{
+  const Node& node = m_nodes[n];
+  if (d == depth) gts::write_oogl(node.box, out);
+  else if (d < depth && node.child[0] >= 0)
+    for (int c : node.child) write_oogl(c, d + 1, depth, out);
 }
 
 } // namespace gts

@@ -28,6 +28,45 @@ inline double orient3d(Vec3 a, Vec3 b, Vec3 c, Vec3 d)
   return orient3d(pa, pb, pc, pd);
 }
 
+// Positive when d lies inside the circle through a, b and c, negative
+// outside, zero on it; a, b and c must run counterclockwise, or the sign is
+// reversed. Only x and y are read.
+double incircle(const double* a, const double* b, const double* c, const double* d);
+
+// Positive when e lies inside the sphere through a, b, c and d, negative
+// outside, zero on it; orient3d(a, b, c, d) must be positive, or the sign
+// is reversed.
+double insphere(const double* a, const double* b, const double* c, const double* d, const double* e);
+
+// gts_point_orientation: orient2d() of the projections on the xy plane.
+inline double orient2d(Vec3 a, Vec3 b, Vec3 c)
+{
+  const double pa[2] = { a.x, a.y }, pb[2] = { b.x, b.y }, pc[2] = { c.x, c.y };
+  return orient2d(pa, pb, pc);
+}
+
+// gts_point_in_circle: incircle() of the projections of a, b, c and p on
+// the xy plane: positive when p lies inside.
+inline double in_circle(Vec3 p, Vec3 a, Vec3 b, Vec3 c)
+{
+  const double pa[2] = { a.x, a.y }, pb[2] = { b.x, b.y }, pc[2] = { c.x, c.y }, pp[2] = { p.x, p.y };
+  return incircle(pa, pb, pc, pp);
+}
+
+// gts_point_in_sphere: insphere() of a, b, c, d and p: positive when p
+// lies inside.
+inline double in_sphere(Vec3 p, Vec3 a, Vec3 b, Vec3 c, Vec3 d)
+{
+  const double pa[3] = { a.x, a.y, a.z }, pb[3] = { b.x, b.y, b.z }, pc[3] = { c.x, c.y, c.z };
+  const double pd[3] = { d.x, d.y, d.z }, pp[3] = { p.x, p.y, p.z };
+  return insphere(pa, pb, pc, pd, pp);
+}
+
+// gts_point_orientation_sos: the sign of orient2d(a, b, c) of the
+// projections on the xy plane, never zero, with ties broken by Simulation
+// of Simplicity in the order given by rank, as orient3d_sos().
+int orient2d_sos(const Vec3* p[3], const unsigned rank[3]);
+
 // gts_point_orientation_3d_sos: the sign of orient3d(a, b, c, d), never
 // zero. Ties are broken by Simulation of Simplicity, which needs a fixed
 // order of the points: rank gives each point's place in it. gts-cxx ranks

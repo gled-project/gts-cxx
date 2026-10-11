@@ -7,7 +7,11 @@
 
 #include "gts/all.h"
 
+#include <fstream>
+#include <limits>
+#include <array>
 #include <map>
+#include <memory>
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -15,6 +19,7 @@
 #include <stdexcept>
 #include <print>
 #include <span>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -61,7 +66,11 @@ void print_summary(const Surface& s)
   std::println("manifold {}",    is_manifold(s)   ? 1 : 0);
   std::println("closed {}",      is_closed(s)     ? 1 : 0);
   std::println("orientable {}",  is_orientable(s) ? 1 : 0);
-  std::println("self_intersecting {}", is_self_intersecting(s) ? 1 : 0);
+  std::size_t self_ties = 0;
+  std::println("self_intersecting {}", is_self_intersecting(s, &self_ties) ? 1 : 0);
+  // Only from gts-cxx: compare.py treats a differing self_intersecting with
+  // ties as degenerate.
+  std::println("self_sos_ties {}", self_ties);
 
   BBox b;
   for (VertexId v : s.vertices()) b.add(g.vertex(v).p);
@@ -217,6 +226,55 @@ void iso_cmd(Surface& s, std::span<char*> a)
   else if (algo == "tetra_bounded") isosurface_tetra_bounded(s, g, pf, iso);
   else if (algo == "tetra_bcl")     isosurface_tetra_bcl    (s, g, pf, iso);
   else fail("ALGO must be cartesian, tetra, tetra_bounded or tetra_bcl");
+}
+
+// isoslice FUNC N, as gts-ref.
+Vec3 warp_point(unsigned i, unsigned j, unsigned k, double lo, double d)
+{
+  return { lo + d*i + 0.15*d*std::sin(1.7*k + 0.3*j),
+           lo + d*j + 0.15*d*std::cos(2.3*i),
+           lo + d*k + 0.15*d*std::sin(1.1*j + 0.5*i) };
+}
+
+void isoslice_cmd(Surface& s, std::span<char*> a)
+{
+  const std::string_view func = a[0];
+  double (*f)(Vec3);
+  double iso;
+  if      (func == "sphere") { f = field_sphere; iso = 1;    }
+  else if (func == "torus")  { f = field_torus;  iso = 0.09; }
+  else if (func == "blobs")  { f = field_blobs;  iso = 4;    }
+  else fail("FUNC must be sphere, torus or blobs");
+
+  const unsigned n = unsigned(std::strtoul(a[1], nullptr, 10)), m = n + 1;
+  const double lo = -1.25, d = 2.5 / n;
+  GridPlane planes[2] = { GridPlane(m, m), GridPlane(m, m) };
+  PlaneValues values[2] = { PlaneValues(m, m), PlaneValues(m, m) };
+  auto fill_plane = [&](int w, unsigned k) {
+    for (unsigned i = 0; i < m; ++i)
+      for (unsigned j = 0; j < m; ++j)
+      {
+        const Vec3 p = warp_point(i, j, k, lo, d);
+        planes[w](i, j) = p;
+        values[w](i, j) = f(p);
+      }
+  };
+  IsoSlice sa(m, m), sb(m, m);
+  IsoSlice* slices[2] = { &sa, &sb };
+  int x = 0, y = 1;
+  fill_plane(x, 0);
+  fill_plane(y, 1);
+  slices[0]->fill(planes[x], &planes[y], values[x], &values[y], iso);
+  for (unsigned k = 2; k < m; ++k)
+  {
+    std::swap(x, y);
+    fill_plane(y, k);
+    slices[1]->fill(planes[x], &planes[y], values[x], &values[y], iso);
+    isosurface_slice(s, *slices[0], *slices[1]);
+    std::swap(slices[0], slices[1]);
+  }
+  slices[1]->fill(planes[y], nullptr, values[y], nullptr, iso);
+  isosurface_slice(s, *slices[0], *slices[1]);
 }
 
 //==============================================================================
@@ -400,6 +458,309 @@ void centers_cmd(const Surface& s)
   std::println("boundary edges={}", boundary(s).size());
 }
 
+//==============================================================================
+// Delaunay triangulation, as gts-ref
+//==============================================================================
+
+// delaunay IN [noconst] [nohull] [holes] [hullconst] [conform] [steiner=N] [quality=Q] [area=A]
+Surface& delaunay_cmd(Geometrium& g, const char* path, std::span<char*> a)
+{
+  bool constraints = true, keep_hull = true, holes = false, conform = false, refine = false, hull_constraints = false;
+  int steiner_max = -1;
+  double quality = 0., max_area = std::numeric_limits<double>::max();
+  for (std::string_view x : a)
+  {
+    if      (x == "noconst") constraints = false;
+    else if (x == "nohull")  keep_hull = false;
+    else if (x == "holes")   holes = true;
+    else if (x == "conform") conform = true;
+    else if (x == "hullconst") hull_constraints = true;
+    else if (x.starts_with("steiner=")) steiner_max = std::atoi(x.data() + 8);
+    else if (x.starts_with("quality=")) { conform = refine = true; quality = std::atof(x.data() + 8); }
+    else if (x.starts_with("area="))    { conform = refine = true; max_area = std::atof(x.data() + 5); }
+    else fail(std::string("unknown delaunay option ") + std::string(x));
+  }
+
+  std::ifstream in(path);
+  if ( ! in) fail(std::string("cannot open ") + path);
+  unsigned nv, ne, nf;
+  if ( ! (in >> nv >> ne >> nf)) fail("bad header");
+  std::vector<VertexId> vertices(nv);
+  std::vector<Vec3> points(nv);
+  for (unsigned i = 0; i < nv; ++i)
+  {
+    if ( ! (in >> points[i].x >> points[i].y >> points[i].z)) fail("bad vertex");
+    vertices[i] = g.add_vertex(points[i]);
+  }
+  std::vector<EdgeId> edges(ne);
+  for (auto& e : edges)
+  {
+    unsigned i, j;
+    if ( ! (in >> i >> j) || i < 1 || i > nv || j < 1 || j > nv) fail("bad edge");
+    e = g.add_edge(vertices[i - 1], vertices[j - 1]);
+    if (constraints) set_constraint(g, e);
+  }
+
+  // gts_triangle_enclosing takes the points from a list built by prepending.
+  std::vector<Vec3> reversed(points.rbegin(), points.rend());
+  const FaceId t = enclosing_triangle(g, reversed, 100.);
+  const auto hull = g.vertices_of(t);
+  Surface& s = g.new_surface();
+  s.add_face(t);
+
+  unsigned n_duplicate = 0;
+  for (VertexId v : vertices)
+    if (const VertexId d = delaunay_add_vertex(s, v); d.valid())
+    {
+      ++n_duplicate;
+      g.replace_vertex(v, d);
+    }
+  std::println("delaunay_duplicates {}", n_duplicate);
+
+  if (constraints)
+  {
+    unsigned n_conflicts = 0;
+    for (EdgeId e : edges) n_conflicts += unsigned(delaunay_add_constraint(s, e).size());
+    std::println("delaunay_conflicts {}", n_conflicts);
+  }
+
+  {
+    KeepOrphans keep(g, { .vertices = true });
+    for (VertexId v : hull) g.destroy(v);
+  }
+
+  if ( ! keep_hull) delaunay_remove_hull(s);
+  if (hull_constraints)
+    for (EdgeId e : boundary(s)) set_constraint(g, e);
+  if (holes)
+    std::println("delaunay_holes {}", remove_faces_if(s, [&](FaceId f) {
+      const auto ve = g.vertices_edges(f);
+      for (int k = 0; k < 3; ++k)
+        if (is_constraint(g, ve.e[k]) && g.edge(ve.e[k]).v[0] != ve.v[k]) return true;
+      return false;
+    }));
+
+  if (conform)
+  {
+    const unsigned encroached = delaunay_conform(s, steiner_max);
+    std::println("delaunay_encroached {}", encroached);
+    if (encroached == 0 && refine)
+    {
+      const FaceCost cost = [&](const Geometrium& g, FaceId f) {
+        const double q = g.quality(f), ar = g.area(f);
+        return q < quality || ar > max_area ? q : 0.;
+      };
+      std::println("delaunay_unrefined {}", delaunay_refine(s, steiner_max, cost));
+    }
+  }
+  std::println("delaunay_check {}", delaunay_check(s).valid() ? 1 : 0);
+  return s;
+}
+
+// As gts-ref's strip_chain.
+bool strip_chain(const std::vector<std::array<VertexId, 3>>& f)
+{
+  if (f.size() < 2) return true;
+  auto in = [](VertexId v, const std::array<VertexId, 3>& t) { return v == t[0] || v == t[1] || v == t[2]; };
+  std::vector<VertexId> shared, sq;
+  for (VertexId v : f[0]) if (in(v, f[1])) shared.push_back(v); else sq.push_back(v);
+  if (shared.size() != 2 || sq.size() != 1) return false;
+  if (f.size() > 2 && in(shared[0], f[2])) std::swap(shared[0], shared[1]);
+  sq.push_back(shared[0]);
+  sq.push_back(shared[1]);
+  for (std::size_t k = 1; k < f.size(); ++k)
+  {
+    if ( ! in(sq[k], f[k]) || ! in(sq[k + 1], f[k])) return false;
+    VertexId next;
+    for (VertexId v : f[k]) if (v != sq[k] && v != sq[k + 1]) next = v;
+    sq.push_back(next);
+  }
+  return true;
+}
+
+// strip IN, as gts-ref.
+void strip_cmd(const Surface& s)
+{
+  const Geometrium& g = s.geometrium();
+  const auto list = strips(s);
+  std::vector<bool> seen(g.face_capacity());
+  Range len;
+  bool cover = true, adjacent = true, chain = true;
+  std::size_t total = 0;
+  for (const auto& strip : list)
+  {
+    len.add(double(strip.size()));
+    std::vector<std::array<VertexId, 3>> faces;
+    for (FaceId f : strip) faces.push_back(g.vertices_of(f));
+    if ( ! strip_chain(faces)) chain = false;
+    for (std::size_t j = 0; j < strip.size(); ++j, ++total)
+    {
+      if (seen[strip[j].i]) cover = false;
+      seen[strip[j].i] = true;
+      if (j + 1 < strip.size() && ! g.common_edge(strip[j], strip[j + 1]).valid()) adjacent = false;
+    }
+  }
+  len.update();
+  if (total != s.face_number()) cover = false;
+  std::println("strips {}", list.size());
+  std::println("strip_faces {}", total);
+  std::println("strip_cover {}", cover ? 1 : 0);
+  std::println("strip_adjacent {}", adjacent ? 1 : 0);
+  std::println("strip_chain {}", chain ? 1 : 0);
+  print_range("strip_length", len);
+}
+
+//==============================================================================
+// Progressive and hierarchical surfaces, as gts-ref
+//==============================================================================
+
+void print_level(const char* what, std::size_t level, const Surface& s)
+{
+  std::println("{}-{} vertices={} edges={} faces={} area={:.12e} volume={:.12e} closed={} manifold={} orientable={}",
+               what, level, s.vertex_number(), s.edge_number(), s.face_number(), area(s), volume(s),
+               is_closed(s) ? 1 : 0, is_manifold(s) ? 1 : 0, is_orientable(s) ? 1 : 0);
+}
+
+std::unique_ptr<PSurface> make_psurface(Surface& s, std::size_t min_edges)
+{
+  return std::make_unique<PSurface>(s, stop_below_edges(min_edges), EdgeCost{}, CollapsePosition{},
+                                    std::numbers::pi / 180);
+}
+
+void psurface_levels(PSurface& ps, std::span<char*> levels)
+{
+  std::println("psurface min={} max={}", ps.min_vertex_number(), ps.max_vertex_number());
+  for (char* l : levels)
+  {
+    const std::size_t n = std::strtoul(l, nullptr, 10);
+    ps.set_vertex_number(n);
+    print_level("level", n, ps.surface());
+  }
+  ps.set_vertex_number(ps.max_vertex_number());
+}
+
+void hsurface_cmd(Surface& s, std::size_t min_edges, unsigned n)
+{
+  const Geometrium& g = s.geometrium();
+  auto ps = make_psurface(s, min_edges);
+  auto x = [&](const VertexSplit& vs) { return g.vertex(vs.v).p.x; };
+  HSurface hs(*ps, x, x);
+  std::println("hsurface height={} vertices={}", hs.height(), hs.vertex_number());
+  // GTS took the top of each heap. gts-cxx refuses a collapse out of order
+  // that would break the surface, so the split of the smallest key that it
+  // allows is taken.
+  const auto& sp = hs.splits();
+  auto best = [&](bool expand) {
+    int b = -1;
+    for (int i = 0; i < int(sp.size()); ++i)
+      if ((expand ? hs.can_expand(i) : hs.can_collapse(i)) && (b < 0 || x(sp[i]) < x(sp[b]))) b = i;
+    return b;
+  };
+  for (int i; (i = best(false)) >= 0;) hs.collapse(i);
+  print_level("coarsest", hs.vertex_number(), s);
+  for (unsigned k = 0; k < n; ++k)
+  {
+    const int i = best(true);
+    if (i < 0) break;
+    hs.expand(i);
+  }
+  print_level("expanded", hs.vertex_number(), s);
+  for (unsigned k = 0; k < n / 2; ++k)
+  {
+    const int i = best(false);
+    if (i < 0) break;
+    hs.collapse(i);
+  }
+  print_level("collapsed", hs.vertex_number(), s);
+  while (auto top = hs.top_expandable()) hs.expand(top->first);
+}
+
+//==============================================================================
+// Graphs and partitions, as gts-ref
+//==============================================================================
+
+void graph_stats(const NodeSet& g)
+{
+  Range degree;
+  for (GNodeId n : g.nodes()) degree.add(gts::degree(g.graph(), n, &g));
+  degree.update();
+  std::println("graph nodes={} edges={} weight={:.6e}", g.size(), edges_of(g).size(), g.weight());
+  print_range("graph_degree", degree);
+}
+
+void partition_stats(const NodeSet& g, std::span<const NodeSet> parts)
+{
+  std::size_t n = 0;
+  Range size;
+  for (const NodeSet& p : parts) { n += p.size(); size.add(double(p.size())); }
+  size.update();
+  bool ok = true;
+  for (GNodeId x : g.nodes())
+  {
+    unsigned k = 0;
+    for (const NodeSet& p : parts) k += p.contains(x);
+    if (k != 1) ok = false;
+  }
+  std::println("parts {}", parts.size());
+  std::println("parts_nodes {}", n);
+  std::println("parts_cover {}", ok ? 1 : 0);
+  std::println("parts_cut {}", partition_edges_cut(parts));
+  std::println("parts_balance {:.6e}", partition_balance(parts));
+  print_range("parts_size", size);
+}
+
+void graph_cmd(const Surface& s, std::span<char*> a)
+{
+  Graph gr;
+  NodeSet g = surface_graph(gr, s);
+  graph_stats(g);
+  const std::string_view what = a[0];
+  if (what == "bubble" && a.size() == 3)
+  {
+    const auto parts = bubble_partition(g, unsigned(std::strtoul(a[1], nullptr, 10)), unsigned(std::strtoul(a[2], nullptr, 10)));
+    partition_stats(g, parts);
+  }
+  else if (what == "bisect" && (a.size() == 3 || a.size() == 5))
+  {
+    const unsigned ntry = unsigned(std::strtoul(a[2], nullptr, 10));
+    GraphBisection bg = std::string_view(a[1]) == "ggg" ? ggg_bisection(g, ntry) : bfgg_bisection(g, ntry);
+    if (a.size() == 5)
+    {
+      const unsigned mmax = unsigned(std::strtoul(a[4], nullptr, 10));
+      if (std::string_view(a[3]) == "kl") kl_refine(bg, mmax);
+      else while (bkl_refine(bg, mmax, 0.1f) != 0.) {}
+    }
+    std::println("bisection_check {}", check(bg) ? 1 : 0);
+    const NodeSet parts[2] = { bg.g1, bg.g2 };
+    partition_stats(g, parts);
+  }
+  else if (what == "recursive" && a.size() == 2)
+  {
+    NodeSet whole = g;
+    const auto parts = recursive_bisection(gr, whole, unsigned(std::strtoul(a[1], nullptr, 10)), 10, 50, 100, 0.1f);
+    partition_stats(g, parts);
+  }
+  else if (what == "pgraph" && a.size() == 2)
+  {
+    PGraph pg(gr, g, std::strtoul(a[1], nullptr, 10));
+    std::println("pgraph min={} max={} levels={}", pg.min_node_number(), pg.max_node_number(), pg.levels());
+    graph_stats(g);
+    pg.set_node_number(pg.max_node_number());
+    graph_stats(g);
+  }
+  else if (what == "io")
+  {
+    std::stringstream io;
+    write_graph(g, io);
+    Graph gr1;
+    auto g1 = read_graph(gr1, io);
+    if ( ! g1) fail(std::format("cannot read the graph back: {}:{}: {}", g1.error().line, g1.error().pos, g1.error().message));
+    graph_stats(*g1);
+  }
+  else if (what != "stats")
+    fail("graph: WHAT must be stats, bubble, bisect, recursive, pgraph or io");
+}
+
 } // namespace
 
 int main(int argc, char* argv[])
@@ -504,6 +865,71 @@ int main(int argc, char* argv[])
   else if (cmd == "centers" && a.size() == 1)
   {
     centers_cmd(read_surface(g, a[0]));
+  }
+  else if (cmd == "psurface" && a.size() >= 2)
+  {
+    s = &read_surface(g, a[0]);
+    auto ps = make_psurface(*s, std::strtoul(a[1], nullptr, 10));
+    psurface_levels(*ps, a.subspan(2));
+  }
+  else if (cmd == "psurface-write" && a.size() == 3)
+  {
+    s = &read_surface(g, a[0]);
+    auto ps = make_psurface(*s, std::strtoul(a[1], nullptr, 10));
+    std::ofstream o(a[2]);
+    if ( ! o) fail(std::string("cannot write ") + a[2]);
+    ps->write(o);
+  }
+  else if (cmd == "psurface-read" && a.size() >= 1)
+  {
+    std::ifstream in(a[0]);
+    if ( ! in) fail(std::string("cannot open ") + a[0]);
+    try
+    {
+      auto ps = PSurface::read(g, in);
+      if ( ! ps) fail(std::format("cannot read {}: {}", a[0], ps.error().message));
+      s = &(*ps)->surface();
+      psurface_levels(**ps, a.subspan(1));
+    }
+    catch (const std::exception& e) { fail(e.what()); }
+  }
+  else if (cmd == "hsurface" && a.size() == 3)
+  {
+    s = &read_surface(g, a[0]);
+    try { hsurface_cmd(*s, std::strtoul(a[1], nullptr, 10), unsigned(std::strtoul(a[2], nullptr, 10))); }
+    catch (const std::exception& e) { fail(e.what()); }
+  }
+  else if (cmd == "jostle" && a.size() == 2)
+  {
+    std::ifstream in(a[0]);
+    if ( ! in) fail(std::string("cannot open ") + a[0]);
+    Graph gr;
+    auto gs = read_jostle(gr, in);
+    if ( ! gs) fail(std::format("cannot read {}: {}:{}: {}", a[0], gs.error().line, gs.error().pos, gs.error().message));
+    graph_stats(*gs);
+    NodeSet whole = *gs;
+    const auto parts = recursive_bisection(gr, whole, unsigned(std::strtoul(a[1], nullptr, 10)), 10, 50, 100, 0.1f);
+    partition_stats(*gs, parts);
+  }
+  else if (cmd == "graph" && a.size() >= 2)
+  {
+    try { graph_cmd(read_surface(g, a[0]), a.subspan(1)); }
+    catch (const std::exception& e) { fail(e.what()); }
+  }
+  else if (cmd == "strip" && a.size() == 1)
+  {
+    s = &read_surface(g, a[0]);
+    strip_cmd(*s);
+  }
+  else if (cmd == "isoslice" && a.size() == 2)
+  {
+    s = &g.new_surface();
+    isoslice_cmd(*s, a);
+  }
+  else if (cmd == "delaunay" && a.size() >= 1)
+  {
+    try { s = &delaunay_cmd(g, a[0], a.subspan(1)); }
+    catch (const std::exception& e) { fail(e.what()); }
   }
   else
     unsupported(cmd);

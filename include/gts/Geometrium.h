@@ -259,6 +259,8 @@ struct OrphanPolicy
   bool faces = false, edges = false, vertices = false;
 };
 
+namespace detail { struct SplitAccess; }
+
 class Geometrium
 {
 public:
@@ -283,6 +285,7 @@ public:
 
   // Sets the attributes of piece from those of parent with the split hooks.
   // piece may be parent.
+  void split_attributes(VertexId piece, VertexId parent);
   void split_attributes(EdgeId piece, EdgeId parent);
   void split_attributes(FaceId piece, FaceId parent);
 
@@ -373,6 +376,40 @@ public:
   void kill_edge(EdgeId e);
   void kill_vertex(VertexId v);
 
+  // gts_object_destroy: removes the element and everything on it, faces
+  // from their surfaces included, then edges left without faces and
+  // vertices left without edges, as far as the orphan policy allows.
+  void destroy(FaceId f);
+  void destroy(EdgeId e);
+  void destroy(VertexId v);
+
+  // Takes f out of the mesh but keeps it, with its index and attributes, as
+  // GTS's vertex splits keep the faces they collapse: f leaves its surfaces
+  // without the release cascade and leaves the rings of its edges. A parked
+  // element is dead to every query, and collect() keeps and renumbers it.
+  // unpark() puts f back on the edges a, b and c, as the newest face of
+  // each, in no surface. Throws std::invalid_argument when f is not parked
+  // or a, b, c do not form a triangle.
+  void park(FaceId f);
+  void unpark(FaceId f, EdgeId a, EdgeId b, EdgeId c);
+  // The same for a vertex without edges, which unpark() brings back
+  // without edges.
+  void park(VertexId v);
+  void unpark(VertexId v);
+  bool parked(FaceId f) const   { return m_faces[f.i].flags & kParked; }
+  bool parked(VertexId v) const { return m_vertices[v.i].flags & kParked; }
+
+  // Moves the end of e at from to to, as GTS code assigns s->v1 or s->v2;
+  // e becomes the newest edge of to. Throws std::invalid_argument when from
+  // is not an end of e or to is its other end.
+  void reattach(EdgeId e, VertexId from, VertexId to);
+
+  // gts_vertex_is_contact: the number of sets of faces around v that are
+  // connected to each other only through v. With sever, v stays with the
+  // first set and each other set gets a new vertex at v's position, its
+  // attributes split from v's.
+  unsigned vertex_contacts(VertexId v, bool sever = false);
+
   const Vertex& vertex(VertexId v) const { return m_vertices[v.i]; }
   const Edge&   edge(EdgeId e) const     { return m_edges[e.i]; }
   const Face&   face(FaceId f) const     { return m_faces[f.i]; }
@@ -455,8 +492,8 @@ public:
   std::size_t surface_number() const { return m_surfaces.size(); }
 
   // Copies the faces of src, a surface of src_geo, into a new surface here,
-  // with new edges and vertices, and the attributes that exist here under
-  // the same name and type. src_geo may be this Geometrium.
+  // with new edges and vertices, their flags, and the attributes that exist
+  // here under the same name and type. src_geo may be this Geometrium.
   Surface& import(const Geometrium& src_geo, const Surface& src);
   // The same into an existing surface dst. With src_geo this Geometrium, it
   // is gts_surface_copy (dst, src).
@@ -467,9 +504,10 @@ public:
   const OrphanPolicy& orphan_policy() const { return m_orphans; }
   void set_orphan_policy(OrphanPolicy p)    { m_orphans = p; }
 
-  // Removes dead elements and the unused ones selected by o, renumbers
-  // everything that remains, attributes and surfaces included, keeping the
-  // order of every ring, then calls the renumbering callouts.
+  // Removes dead elements, except parked ones, and the unused ones selected
+  // by o, renumbers everything that remains, attributes and surfaces
+  // included, keeping the order of every ring, then calls the renumbering
+  // callouts.
   void collect(CollectOptions o = {});
 
   // Registers a function that collect() calls after renumbering. Callouts
@@ -502,6 +540,7 @@ public:
 
 private:
   friend class Surface;
+  friend struct detail::SplitAccess;
 
   template <class T>
   std::vector<T>* add_column(std::vector<detail::Column>& cols, std::size_t n, std::string name, Hooks<T> h)
@@ -544,13 +583,21 @@ private:
 
   // Removes f from every surface and unlinks it, without the release cascade.
   void destroy_face(FaceId f);
+  // destroy() of a face or an edge, sparing keep_e and keep_v, which the
+  // caller is destroying.
+  void destroy_cascade(FaceId f, EdgeId keep_e, VertexId keep_v);
+  void destroy_cascade(EdgeId e, VertexId keep_v);
   // Unlinks e, which must have no faces, and marks dead its vertices left
   // without edges, as GTS's segment_destroy.
   void destroy_edge(EdgeId e);
 
   void link_edge(EdgeId e);
   void link_edge_slot(EdgeId e, int k);   // into the ring of its k-th vertex, as the newest
+  void unlink_edge_slot(EdgeId e, int k); // out of the ring of its k-th vertex
   void link_face(FaceId f);
+  // set_face_edges() without the check that the edges form a triangle, for
+  // the vertex splits, which rewire faces before moving the edges' ends.
+  void relink_face(FaceId f, const std::array<EdgeId, 3>& e);
   void link_face_slot(FaceId f, int k);   // into the ring of its k-th edge, as the newest
   void unlink_face_slot(FaceId f, int k); // out of the ring of its k-th edge
   void release_face(FaceId f); // called when a face leaves its last surface

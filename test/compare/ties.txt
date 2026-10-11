@@ -1,12 +1,13 @@
-# Cases where costs tie and GTS chooses between the tied edges by the order
-# of its face hash table, which follows memory addresses. The C library gives
-# different results from run to run on these cases without "setarch -R", and
-# the C++ library chooses by edge_order_key(), by geometry. compare.py does not count their
-# summaries as differences; compare.sh instead checks that the two surfaces
-# are within MAX_DISTANCE of each other both ways (gts_surface_distance),
-# a tenth of the mean edge length of the result.
+# Cases where GTS chooses between equal candidates by the order of its hash
+# tables, which follows memory addresses. The C library gives different
+# results from run to run on these cases without "setarch -R", and the C++
+# library chooses by index or, for coarsening, by edge_order_key(). compare.py
+# does not count their summaries as differences; compare.sh instead checks
+# that the two surfaces are within MAX_DISTANCE of each other both ways
+# (gts_surface_distance), a tenth of the mean edge length of the result.
 #
-# Each line is: NAME  MAX_DISTANCE
+# Each line is: NAME  MAX_DISTANCE  [KEY ...], where the summary lines KEY
+# must agree all the same.
 
 coarsen-sphere5-volume-number-1000      0.02
 coarsen-iso-torus-length-cost-0.0625    0.008
@@ -23,3 +24,51 @@ refine-cube-length-number-200           1e-12
 # 5 faces of a few thousand differ, and every vertex agrees.
 bool-inter-horse5-horse6                0.0006
 bool-diff-horse5-horse6                 0.0006
+
+# The cluster grid makes its vertices and faces in the order of hash tables
+# keyed by pointer, and sums the points of a cluster in that order. The two
+# surfaces coincide; quads are split along the other diagonal, and the
+# positions differ in the last bits, which the 10 digits of a written
+# surface can round apart.
+cluster-cylinder-1                      3.0
+cluster-horse5-0.005                    0.0006
+
+# Conforming and refining a constrained Delaunay triangulation split the
+# encroached constraints and the worst faces in the order of GTS's edge and
+# face hash tables, which decides where the new vertices go. Both results
+# triangulate the same domain.
+delaunay-too_close-conform              1e-12
+delaunay-crossing-conform               1e-9
+delaunay-ring-conform-steiner-5         1e-12
+delaunay-ring-quality-0.5               1e-12
+delaunay-ring-holes-quality-0.6         1e-12
+delaunay-ring-holes-area-0.005          1e-12
+delaunay-squarehole-area-0.002          1e-12
+delaunay-two_segments-quality-0.5       1e-12
+
+# Triangle strips start from the face with the fewest unused neighbours, the
+# first of equal ones in the order of GTS's face hash table. The strips
+# differ; both must cover every face once, in chains of shared edges. The
+# cylinder has slivers, on which the distance of a surface to itself comes
+# out at 2e-4.
+strip-horse5                            1e-12  strip_faces strip_cover strip_adjacent strip_chain
+strip-sphere4                           1e-12  strip_faces strip_cover strip_adjacent strip_chain
+strip-torus                             1e-12  strip_faces strip_cover strip_adjacent strip_chain
+strip-cylinder                          3.0    strip_faces strip_cover strip_adjacent strip_chain
+strip-cube                              1e-12  strip_faces strip_cover strip_adjacent strip_chain
+
+# The edges of a sphere tie in length, and the progressive surfaces collapse
+# them in different orders; the coarsest and the finest levels agree.
+psurface-sphere4-100                    1e-12  psurface
+
+# Partitions start from the nodes of smallest degree, and grow, refine and
+# match in the order of GTS's hash tables. The parts differ; both must cover
+# every node once. The progressive graph must have as many levels, and
+# expand back to the same graph. There are no surfaces to compare.
+graph-horse5-bubble-8                   0      parts parts_nodes parts_cover
+graph-horse5-ggg                        0      parts parts_nodes parts_cover bisection_check
+graph-horse5-bfgg-kl                    0      parts parts_nodes parts_cover bisection_check
+graph-horse5-ggg-bkl                    0      parts parts_nodes parts_cover bisection_check
+graph-horse5-recursive-3                0      parts parts_nodes parts_cover
+graph-sphere4-recursive-2               0      parts parts_nodes parts_cover
+graph-horse5-pgraph-100                 0      pgraph graph graph_degree

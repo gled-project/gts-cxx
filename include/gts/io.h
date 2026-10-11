@@ -1,4 +1,5 @@
-// Reading and writing surfaces in GTS's .gts format.
+// Reading and writing surfaces in GTS's .gts format, and writing them for
+// Geomview (OOGL) and VTK.
 //
 // The format: a line "nv ne nf", optionally followed by four class names;
 // then nv lines of vertex coordinates "x y z", ne lines of edges "v1 v2"
@@ -18,6 +19,7 @@
 
 #include <expected>
 #include <filesystem>
+#include <functional>
 #include <iosfwd>
 #include <string>
 
@@ -44,5 +46,27 @@ struct WriteOptions
 // surface's order, numbered from 1.
 void write_gts(const Surface& s, std::ostream& out, WriteOptions o = {});
 bool write_gts(const Surface& s, const std::filesystem::path& path, WriteOptions o = {});
+
+// A colour for the Geomview writers, GtsColor.
+struct Rgb { double r = 0, g = 0, b = 0; };
+
+// Colours for the Geomview writers, taking the place of GTS's colour
+// method of a class. A vertex colour makes the object COFF.
+struct OoglColors
+{
+  std::function<Rgb(VertexId)> vertex;
+  std::function<Rgb(FaceId)>   face;
+  std::function<Rgb(EdgeId)>   edge;
+};
+
+// gts_surface_write_oogl: s as a Geomview OFF object, vertices in index
+// order, numbered from 0, coordinates with 6 significant digits.
+void write_oogl(const Surface& s, std::ostream& out, const OoglColors& c = {});
+// gts_surface_write_oogl_boundary: the boundary edges of s as a Geomview
+// LIST of VECT lines.
+void write_oogl_boundary(const Surface& s, std::ostream& out, const OoglColors& c = {});
+// gts_surface_write_vtk: s as legacy VTK polygon data, vertices in index
+// order.
+void write_vtk(const Surface& s, std::ostream& out);
 
 } // namespace gts

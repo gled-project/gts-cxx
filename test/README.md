@@ -21,29 +21,39 @@ with `compare.py`: integers exactly, floating-point values to a relative
 tolerance (default 1e-9). It then reads every surface the C++ library wrote
 back through the C library, to check the writer.
 
-All 261 cases run through both libraries: the 240 of the port of what
-Gled calls, and 21 for the distances, the inside test, curvature, merging
-and the centres. These 21 print a line per vertex or sample point, keyed by
-its coordinates, and read surfaces the C library wrote (`@REF@` in
-`cases.txt`), so that both programs measure the same input. On 2026-10-10,
-159 cases agree with the C library in every value to 1e-9, and so do the
-surfaces written by the C++ library when read by the C one. The summaries
-include whether the surface intersects itself.
+All 307 cases run through both libraries: the 240 of the port of what
+Gled calls, 21 for the distances, the inside test, curvature, merging and
+the centres, and 46 for what was ported after: Delaunay triangulation, the
+iso-surface slices, triangle strips, progressive and hierarchical surfaces,
+and graphs. The 21 print a line per vertex or sample point, keyed by its
+coordinates, and read surfaces the C library wrote (`@REF@` in
+`cases.txt`), so that both programs measure the same input. The summaries
+include whether the surface intersects itself. On 2026-10-11:
 
-9 cases are in `test/compare/fixed.txt`: gts-cxx fixes an error of GTS
-there, or departs from it on purpose (see `QUIRKS.md`), so the results
-differ. `compare.py` runs the check given for each instead. The five
-iso-surfaces of the bounded and the body-centred tetrahedra must be closed,
-manifold and orientable, also when the C library reads them back. The three
-of the cartesian method may differ only in the sign of the volume, as their
-faces are oriented the other way. In the curvature of the C library's
-bounded torus, the only lines that may differ are those of vertices where
-gts-cxx gives no Gaussian curvature.
-
-5 cases are in `test/compare/ties.txt`: their costs tie, or their cut faces
-are triangulated in another order, and GTS's choice there follows memory
-addresses. `compare.sh` checks instead that the two surfaces lie within a
-tenth of the mean edge length of each other.
+- 185 cases agree with the C library in every value to 1e-9, and so do
+  the surfaces written by the C++ library when read by the C one.
+- 15 are in `test/compare/fixed.txt`: gts-cxx fixes an error of GTS there,
+  or departs from it on purpose (see `QUIRKS.md`), so the results differ,
+  or the C library crashes. `compare.py` runs the check given for each
+  instead: the iso-surfaces of the bounded and the body-centred tetrahedra
+  must be closed, manifold and orientable, also when the C library reads
+  them back; those of the cartesian method and of the slices may differ
+  only in the sign of the volume, as their faces are oriented the other
+  way; in the curvature of the C library's bounded torus, only vertices
+  where gts-cxx gives no Gaussian curvature may differ; the hierarchical
+  surfaces, which crash GTS, must succeed.
+- 16 are in `test/compare/ties.txt`: GTS chooses between equal costs or
+  candidates in the order of its hash tables, which follows memory
+  addresses. `compare.sh` checks instead that the two surfaces lie within
+  a tenth of the mean edge length of each other, and `compare.py` that the
+  lines listed with the case agree: for strips and partitions, that every
+  face or node is taken once.
+- 1 is self-tied: a flat surface, whose self-intersection Simulation of
+  Simplicity decides; gts-cxx counts those ties (`self_sos_ties`).
+- 82 are degenerate booleans, and 8 crash in the C library: six
+  booleans; the refinement of `crossing.gts`, which does not end (see
+  `QUIRKS.md`); and reading back the progressive surface of an open
+  surface, an error gts-cxx keeps. gts-cxx reports the errors. See below.
 
 82 boolean cases are degenerate: the two surfaces touch or have coplanar
 faces, and Simulation of Simplicity decides the exactly degenerate

@@ -12,6 +12,11 @@
 
 namespace gts {
 
+void Geometrium::split_attributes(VertexId piece, VertexId parent)
+{
+  for (auto& c : m_vertex_columns) c.split(piece.i, parent.i);
+}
+
 void Geometrium::split_attributes(EdgeId piece, EdgeId parent)
 {
   for (auto& c : m_edge_columns) c.split(piece.i, parent.i);

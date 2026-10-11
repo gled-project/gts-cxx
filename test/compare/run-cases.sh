@@ -18,7 +18,8 @@
 #
 # In cases.txt, @DATA@ stands for test/data, @OUT@ for this program's output
 # directory and @REF@ for gts-ref's, so that both programs can read a
-# surface written by the C library.
+# surface written by the C library. @NEW@ also stands for the output
+# directory, for a file the case writes.
 #
 # A program that does not support a case yet exits with 3, which is counted
 # as unsupported.
@@ -35,7 +36,8 @@ REF=$(dirname "$OUT")/ref
 TIMEOUT=${TIMEOUT:-120}
 
 mkdir -p "$OUT"
-rm -f "$OUT"/*.txt "$OUT"/*.err "$OUT"/*.gts
+rm -f "$OUT"/*.txt "$OUT"/*.err "$OUT"/*.gts "$OUT"/*.psurf
+NEW=""
 
 n_ok=0; n_error=0; n_crash=0; n_unsupported=0
 crashed=()
@@ -46,7 +48,7 @@ run_case()
   # An input made by an earlier case that this program does not support.
   local x
   for x in "$@"; do
-    if [[ $x == "$OUT"/* && ! -f $x ]]; then
+    if [[ $x == "$OUT"/* && ! -f $x && " $NEW " != *" $x "* ]]; then
       printf 'command %s\nstatus unsupported input %s missing\nexit 3\n' "$*" "${x#"$OUT"/}" > "$OUT/$name.txt"
       sed -i "1s|$OUT/|@OUT@/|g" "$OUT/$name.txt"
       n_unsupported=$((n_unsupported + 1))
@@ -69,6 +71,9 @@ run_case()
 # Listed cases
 while read -r name rest; do
   case "$name" in ''|'#'*) continue;; esac
+  NEW=""
+  for w in $rest; do [[ $w == @NEW@* ]] && NEW+=" ${w/@NEW@/$OUT}"; done
+  rest=${rest//@NEW@/$OUT}
   rest=${rest//@DATA@/$DATA}
   rest=${rest//@OUT@/$OUT}
   rest=${rest//@REF@/$REF}

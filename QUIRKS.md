@@ -73,7 +73,40 @@ fixes change, with the check each must pass instead of equality with GTS.
 
 ## Errors
 
-None known.
+- `delaunay_add_constraint()`: where an edge of the triangulation already
+  joins the two vertices of the constraint, the constraint stays out of
+  the triangulation, as an edge without faces, and the existing edge stays
+  unconstrained, so that `delaunay_remove_hull()` then removes faces the
+  constraint should keep. GTS's example `delaunay.c` makes its constraints
+  before it adds the vertices, so that the triangulation takes them as its
+  edges, and the case does not arise there. The constraint could take the
+  faces of the existing edge.
+- `overlaps()`, the box-triangle test of `tribox3.c`, calls `fabsf()` on
+  doubles, as left from the change from float to double in 2004, so the
+  edge components lose half their bits in the bounds of the separating
+  axes. It should use `fabs()`.
+- `split_components()`, GTS's `gts_surface_split`, crosses every edge with
+  exactly two faces, of any surface, and takes a face for a component
+  unless it is in a second surface: a face of another surface across such
+  an edge joins the component, and a face of the surface that is also in
+  another surface is in no component. It should cross the edges with
+  exactly two faces of the surface, and take each face of the surface once.
+- `strips()`, GTS's `gts_surface_strip`, takes as neighbours the faces of
+  every surface on a face's edges, and throws where one is not in the
+  surface, where GTS failed an assertion. It should take those of the
+  surface.
+- `PSurface::read()`: the empty list of faces of a split at a boundary is
+  written as an empty line, and the reader skips blank lines, so it reads
+  the next line in its place. It cannot read back the progressive surface
+  of an open surface, nor can GTS. It should read each list from its own
+  line.
+- `read_graph()`: the lines of plain nodes are empty, and the reader skips
+  blank lines, then takes edge lines for node lines, so it cannot read back
+  a graph, nor can GTS. It should read a line for each node.
+- `read_jostle()` does not move past a neighbour numbered after the node,
+  and loops for ever on the first such line, as GTS's reader does, so it
+  reads no graph with an edge; and it takes a node without neighbours, an
+  empty line, for an error. It should read every neighbour and empty lines.
 
 ## Choices
 
@@ -124,8 +157,6 @@ None open.
   being cut or had no faces yet.
 - `gts_surface_inter_new()` took whether each surface is open, and did not
   use it. `SurfaceInter` does not take it.
-- `tribox3.c`, the box-triangle overlap test, is not ported: neither the
-  booleans nor the self-intersection test use it.
 - `Geometrium::normal()` uses `gts_triangle_normal`'s own choice of
   vertices, which gives the same orientation as `vertices_of()` but not
   always the same first vertex, so that areas agree with GTS to the bit.
@@ -136,6 +167,20 @@ None open.
   order of the faces. GTS's order of faces was its hash order.
 - `principal_directions()` is arbitrary where the two curvatures are equal,
   as everywhere on a sphere, and the last bit of a sum decides it.
+- Ruppert's refinement, `delaunay_refine()`, need not end where the
+  domain has small angles, between constraints or between a constraint and
+  a nearby point. On the convex hull of random points made constraints, GTS
+  and gts-cxx insert circumcentres ever closer to a vertex, until three
+  vertices a bit apart make a face whose circumcentre cannot be computed;
+  GTS fails an assertion there, gts-cxx throws `std::runtime_error`. A
+  limit on Steiner points stops it.
+- `kl_refine()` moves nodes without keeping the boundary maps of the
+  bisection, as GTS's `gts_graph_bisection_kl_refine` did, so `check()`
+  fails after it; `bkl_refine()` keeps them.
+- A Delaunay vertex added exactly on an edge of the face it lies in makes
+  a flat face, which the swap test then removes, as in GTS; on the
+  boundary of the triangulation, with no face to swap with, the flat face
+  stays.
 
 ## Departures from GTS
 
@@ -258,3 +303,48 @@ None open.
 - Elements are not destroyed but marked dead, and `collect()` reclaims them.
   Attributes of dead elements stay readable until then, so that callouts
   can read the attributes of what a split or a collapse removed.
+- The point location of the Delaunay triangulation starts from the nearest
+  of the first n^1/3 faces, which gts-cxx takes in index order and GTS in
+  its hash order. Where points are cocircular, the triangulation can differ
+  in the diagonals of those points. Conforming and refining split the
+  encroached constraints and the worst faces in the order the edges and
+  faces come, which for GTS followed its hash tables; the results differ
+  in where new vertices go (see `test/compare/ties.txt`).
+- A constraint is an edge with the flag `kConstraint`, where GTS used the
+  class `GtsConstraint`. `delaunay_refine()` and `delaunay_conform()` throw
+  where GTS failed an assertion.
+- Vertex splits park the faces they collapse and the vertices they remove,
+  with `Geometrium::park()`, keeping their indices and attributes, where GTS
+  turned the face's memory into a collapsed face. `collect()` keeps parked
+  elements, and progressive surfaces follow the renumbering.
+- `collapse()` of a vertex split first checks that the split can be
+  collapsed: the edge exists with faces, `collapsible()` and no contact, as
+  when the progressive surface was made, and each face on it keeps a
+  neighbour, by which the expansion finds its place. GTS checked nothing,
+  and failed an assertion half way through where the last test fails.
+  `HSurface::collapse()` returns false instead, which happens for
+  collapses out of order, at boundaries and where the link condition fails;
+  `can_collapse()` tells beforehand.
+- `HSurface::expand()` first expands the splits that hold faces it gives
+  back to its two vertices, as `gts_hsplit_force_expand` did. GTS's
+  `gts_hsplit_expand` went ahead and kept such faces, collapsed, in the
+  lists of edges, which gts-cxx's rings do not hold.
+- Graphs visit the nodes of a set in the order they were added, and the
+  boundary maps of a bisection in the order of node indices. GTS visited
+  them in the order of hash tables keyed by pointer, so partitions differ in
+  which of equal choices they take; their quality is alike (see
+  `test/compare/ties.txt`). Weights are floats, as in GTS.
+- `write_graph()` writes the edges between nodes of the set. GTS's
+  `gts_graph_write` wrote every edge of the set's nodes, numbering a node
+  outside the set 0.
+- The Geomview writers take colours from `OoglColors`, where GTS asked the
+  classes of the vertices, faces and edges, and number vertices in index
+  order, as `write_gts()` does.
+- `is_self_intersecting()` can count the orientation tests that
+  Simulation of Simplicity decided, as for a flat surface, whose answer
+  depends on them; the comparison uses the count.
+- `HSurface` takes the splits of the progressive surface over. GTS's
+  `gts_hsurface_new` copied each split, then destroyed the progressive
+  surface, which freed the lists of faces that the copies shared; the first
+  collapse freed them again and crashed, so GTS's hierarchical surfaces
+  never worked.

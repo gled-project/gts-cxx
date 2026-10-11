@@ -37,4 +37,18 @@
   `Triangle` and `BBox`.
 - `add_edge()` refuses an edge from a vertex to itself, and `add_face()`
   three edges that do not form a triangle.
-
+- `park()` takes a face or a vertex out of the mesh but keeps it, with its
+  index and attributes, and `unpark()` puts it back. Parked elements are
+  dead to every query, and `collect()` keeps and renumbers them. Vertex
+  splits park what an edge collapse removes, so that the expansion brings
+  back the same faces and vertices, as GTS's splits kept their memory.
+- `destroy()` of a face, edge or vertex removes it with everything on it,
+  as `gts_object_destroy`, and `reattach()` moves one end of an edge, as GTS
+  code assigned the ends of a segment.
+- Flags below `kUserFlag` are the library's: `kDead`, `kConstraint` for the
+  edges a Delaunay triangulation keeps, and `kParked`.
+- Graphs are separate from Geometria: a `Graph` owns nodes and edges with
+  float weights and an index for the user, such as the face of a node of a
+  surface's dual graph, and a `NodeSet` is a set of its nodes, as a
+  `GtsGraph` is a container of nodes; the parts of a partition are sets of
+  the same nodes.

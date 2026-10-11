@@ -49,8 +49,10 @@ using FaceId   = Id<struct FaceTag>;
 // Flags. The low byte is the library's; users take bits from kUserFlag up.
 enum : std::uint32_t
 {
-  kDead     = 1u << 0, // removed; the storage is reclaimed by collect()
-  kUserFlag = 1u << 8
+  kDead       = 1u << 0, // removed; the storage is reclaimed by collect()
+  kConstraint = 1u << 1, // an edge a Delaunay triangulation keeps; see Delaunay.h
+  kParked     = 1u << 2, // with kDead: out of the mesh, kept by collect(); see Geometrium::park()
+  kUserFlag   = 1u << 8
 };
 
 struct Vertex final

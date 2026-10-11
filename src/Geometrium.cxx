@@ -204,7 +204,11 @@ void Geometrium::set_face_edges(FaceId f, EdgeId a, EdgeId b, EdgeId c)
 {
   if ( ! forms_triangle(a, b, c))
     throw std::invalid_argument("gts::Geometrium::set_face_edges: the edges do not form a triangle");
-  const std::array<EdgeId, 3> ne = { a, b, c };
+  relink_face(f, { a, b, c });
+}
+
+void Geometrium::relink_face(FaceId f, const std::array<EdgeId, 3>& ne)
+{
   auto find = [](const std::array<EdgeId, 3>& es, EdgeId e) {
     for (int k = 0; k < 3; ++k) if (es[k] == e) return k;
     return -1;
@@ -238,29 +242,128 @@ void Geometrium::kill_face(FaceId f)
   m_faces[f.i].flags |= kDead;
 }
 
+void Geometrium::unlink_edge_slot(EdgeId e, int k)
+{
+  const VertexId v = m_edges[e.i].v[k];
+  Vertex& V = m_vertices[v.i];
+  const EdgeId next = m_edges[e.i].next[k];
+  if (next == e) { V.edge = EdgeId(); return; }
+  EdgeId p = V.edge;
+  while (m_edges[p.i].next[vertex_slot(m_edges[p.i], v)] != e)
+    p = m_edges[p.i].next[vertex_slot(m_edges[p.i], v)];
+  m_edges[p.i].next[vertex_slot(m_edges[p.i], v)] = next;
+  if (V.edge == e) V.edge = p;
+}
+
 void Geometrium::kill_edge(EdgeId e)
 {
   if (m_edges[e.i].face.valid())
     throw std::logic_error("gts::Geometrium::kill_edge: the edge has faces");
-  for (int k = 0; k < 2; ++k)
-  {
-    const VertexId v = m_edges[e.i].v[k];
-    Vertex& V = m_vertices[v.i];
-    const EdgeId next = m_edges[e.i].next[k];
-    if (next == e) { V.edge = EdgeId(); continue; }
-    EdgeId p = V.edge;
-    while (m_edges[p.i].next[vertex_slot(m_edges[p.i], v)] != e)
-      p = m_edges[p.i].next[vertex_slot(m_edges[p.i], v)];
-    m_edges[p.i].next[vertex_slot(m_edges[p.i], v)] = next;
-    if (V.edge == e) V.edge = p;
-  }
+  for (int k = 0; k < 2; ++k) unlink_edge_slot(e, k);
   m_edges[e.i].flags |= kDead;
+}
+
+void Geometrium::park(FaceId f)
+{
+  if (dead(f)) throw std::invalid_argument("gts::Geometrium::park: the face is dead");
+  destroy_face(f);
+  m_faces[f.i].flags |= kParked;
+  m_faces[f.i].e = { EdgeId(), EdgeId(), EdgeId() };
+}
+
+void Geometrium::unpark(FaceId f, EdgeId a, EdgeId b, EdgeId c)
+{
+  if ( ! parked(f)) throw std::invalid_argument("gts::Geometrium::unpark: the face is not parked");
+  if ( ! forms_triangle(a, b, c)) throw std::invalid_argument("gts::Geometrium::unpark: the edges do not form a triangle");
+  Face& F = m_faces[f.i];
+  F.flags &= ~(kDead | kParked);
+  F.e = { a, b, c };
+  F.surfaces = 0;
+  link_face(f);
+}
+
+void Geometrium::park(VertexId v)
+{
+  if (dead(v) || m_vertices[v.i].edge.valid())
+    throw std::invalid_argument("gts::Geometrium::park: the vertex is dead or has edges");
+  m_vertices[v.i].flags |= kDead | kParked;
+}
+
+void Geometrium::unpark(VertexId v)
+{
+  if ( ! parked(v)) throw std::invalid_argument("gts::Geometrium::unpark: the vertex is not parked");
+  m_vertices[v.i].flags &= ~(kDead | kParked);
+}
+
+void Geometrium::reattach(EdgeId e, VertexId from, VertexId to)
+{
+  Edge& E = m_edges[e.i];
+  if ((E.v[0] != from && E.v[1] != from) || E.v[0] == to || E.v[1] == to)
+    throw std::invalid_argument("gts::Geometrium::reattach: from is not an end of the edge, or to is");
+  const int k = vertex_slot(E, from);
+  unlink_edge_slot(e, k);
+  E.v[k] = to;
+  link_edge_slot(e, k);
 }
 
 void Geometrium::kill_vertex(VertexId v)
 {
   if (m_vertices[v.i].edge.valid())
     throw std::logic_error("gts::Geometrium::kill_vertex: the vertex has edges");
+  m_vertices[v.i].flags |= kDead;
+}
+
+// As gts_object_destroy on a face: face_destroy, then triangle_destroy for
+// edges left without faces, other than keep_e, and segment_destroy for
+// vertices left without edges, other than keep_v.
+void Geometrium::destroy_cascade(FaceId f, EdgeId keep_e, VertexId keep_v)
+{
+  const auto edges = m_faces[f.i].e;
+  destroy_face(f);
+  if (m_orphans.edges) return;
+  for (EdgeId e : edges)
+  {
+    if (e == keep_e || dead(e) || m_edges[e.i].face.valid()) continue;
+    const auto vs = m_edges[e.i].v;
+    kill_edge(e);
+    if (m_orphans.vertices) continue;
+    for (VertexId v : vs)
+      if (v != keep_v && ! dead(v) && ! m_vertices[v.i].edge.valid())
+        m_vertices[v.i].flags |= kDead;
+  }
+}
+
+// As gts_object_destroy on an edge: edge_destroy, then segment_destroy.
+void Geometrium::destroy_cascade(EdgeId e, VertexId keep_v)
+{
+  std::vector<FaceId> faces;
+  for (FaceId f : faces_of(e)) faces.push_back(f);
+  for (FaceId f : faces) destroy_cascade(f, e, keep_v);
+  const auto vs = m_edges[e.i].v;
+  kill_edge(e);
+  if (m_orphans.vertices) return;
+  for (VertexId v : vs)
+    if (v != keep_v && ! dead(v) && ! m_vertices[v.i].edge.valid())
+      m_vertices[v.i].flags |= kDead;
+}
+
+void Geometrium::destroy(FaceId f)
+{
+  if ( ! dead(f)) destroy_cascade(f, EdgeId(), VertexId());
+}
+
+void Geometrium::destroy(EdgeId e)
+{
+  if ( ! dead(e)) destroy_cascade(e, VertexId());
+}
+
+void Geometrium::destroy(VertexId v)
+{
+  if (dead(v)) return;
+  std::vector<EdgeId> ring;
+  for (EdgeId e : edges_of(v)) ring.push_back(e);
+  for (EdgeId e : ring)
+    if ( ! dead(e)) destroy_cascade(e, v);
   m_vertices[v.i].flags |= kDead;
 }
 
@@ -507,16 +610,19 @@ void Geometrium::import(const Geometrium& g, const Surface& src, Surface& dst)
           if (map_v[sv.i] == kNone)
           {
             map_v[sv.i] = add_vertex(g.vertex(sv).p).i;
+            m_vertices[map_v[sv.i]].flags = g.vertex(sv).flags & ~kDead;
             for (auto [c, s] : vcols) c->copy_from(map_v[sv.i], *s, sv.i);
           }
           vs[j] = VertexId(map_v[sv.i]);
         }
         map_e[se.i] = add_edge(vs[0], vs[1]).i;
+        m_edges[map_e[se.i]].flags = g.edge(se).flags & ~kDead;
         for (auto [c, s] : ecols) c->copy_from(map_e[se.i], *s, se.i);
       }
       es[k] = EdgeId(map_e[se.i]);
     }
     const FaceId nf = add_face(es[0], es[1], es[2]);
+    m_faces[nf.i].flags = g.face(f).flags & ~kDead;
     for (auto [c, s] : fcols) c->copy_from(nf.i, *s, f.i);
     dst.add_face(nf);
   }
@@ -535,15 +641,15 @@ void Geometrium::collect(CollectOptions o)
   for (const auto& s : m_surfaces)
     for (FaceId f : s->m_faces) keep_f[f.i] = true;
   for (Index i = 0; i < nf0; ++i)
-    keep_f[i] = ! (m_faces[i].flags & kDead) && (keep_f[i] || ! o.faces);
+    keep_f[i] = (m_faces[i].flags & kParked) || ( ! (m_faces[i].flags & kDead) && (keep_f[i] || ! o.faces));
   for (Index i = 0; i < nf0; ++i)
-    if (keep_f[i]) for (EdgeId e : m_faces[i].e) keep_e[e.i] = true;
+    if (keep_f[i] && ! (m_faces[i].flags & kParked)) for (EdgeId e : m_faces[i].e) keep_e[e.i] = true;
   for (Index i = 0; i < ne0; ++i)
     keep_e[i] = ! (m_edges[i].flags & kDead) && (keep_e[i] || ! o.edges);
   for (Index i = 0; i < ne0; ++i)
     if (keep_e[i]) for (VertexId v : m_edges[i].v) keep_v[v.i] = true;
   for (Index i = 0; i < nv0; ++i)
-    keep_v[i] = ! (m_vertices[i].flags & kDead) && (keep_v[i] || ! o.vertices);
+    keep_v[i] = (m_vertices[i].flags & kParked) || ( ! (m_vertices[i].flags & kDead) && (keep_v[i] || ! o.vertices));
 
   // New numbers.
   Renumbering r;
@@ -575,7 +681,8 @@ void Geometrium::collect(CollectOptions o)
     if (map_f[i] != kNone)
     {
       Face& x = F[map_f[i]];
-      for (int k = 0; k < 3; ++k) x.e[k] = EdgeId(map_e[m_faces[i].e[k].i]);
+      for (int k = 0; k < 3; ++k)
+        if (m_faces[i].e[k].valid()) x.e[k] = EdgeId(map_e[m_faces[i].e[k].i]);
       x.flags = m_faces[i].flags;
     }
 

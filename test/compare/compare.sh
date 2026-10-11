@@ -21,7 +21,7 @@ rc=$?
 
 echo "=== cases with tied costs, by distance between the C and the C++ surface"
 rc3=0
-while read -r name tol; do
+while read -r name tol _; do
   case "$name" in ''|'#'*) continue;; esac
   a=$OUT/ref/$name.gts b=$OUT/cxx/$name.gts
   if [ ! -f "$a" ] || [ ! -f "$b" ]; then echo "skipped $name (no surface from both)"; continue; fi

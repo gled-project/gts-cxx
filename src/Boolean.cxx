@@ -51,16 +51,22 @@ constexpr unsigned kRankO = std::numeric_limits<unsigned>::max();
 // SurfaceInter::sos_ties(), counted in this thread while t_origin gives the
 // origin of each vertex: 1 for the first surface, 2 for the second, 4 for
 // any other point.
+// With t_count_all, every tie counts, as for is_self_intersecting().
 thread_local std::size_t t_sos_ties = 0;
 thread_local const std::vector<std::uint8_t>* t_origin = nullptr;
+thread_local bool t_count_all = false;
 
 int orient_sos(const Pt& a, const Pt& b, const Pt& c, const Pt& d)
 {
-  if (t_origin && orient3d(a.p, b.p, c.p, d.p) == 0.)
+  if ((t_origin || t_count_all) && orient3d(a.p, b.p, c.p, d.p) == 0.)
   {
-    auto origin = [](unsigned r) -> unsigned { return r < t_origin->size() ? (*t_origin)[r] : 4; };
-    const unsigned m = origin(a.rank) | origin(b.rank) | origin(c.rank) | origin(d.rank);
-    if (m == 3) ++t_sos_ties;
+    if (t_count_all) ++t_sos_ties;
+    else
+    {
+      auto origin = [](unsigned r) -> unsigned { return r < t_origin->size() ? (*t_origin)[r] : 4; };
+      const unsigned m = origin(a.rank) | origin(b.rank) | origin(c.rank) | origin(d.rank);
+      if (m == 3) ++t_sos_ties;
+    }
   }
   const Vec3* p[4] = { &a.p, &b.p, &c.p, &d.p };
   const unsigned r[4] = { a.rank, b.rank, c.rank, d.rank };
@@ -998,9 +1004,15 @@ bool foreach_intersecting_face(const Surface& s, const std::function<void(FaceId
   return any;
 }
 
-bool is_self_intersecting(const Surface& s)
+bool is_self_intersecting(const Surface& s, std::size_t* sos_ties)
 {
-  return foreach_intersecting_face(s, [](FaceId, FaceId) {});
+  if ( ! sos_ties) return foreach_intersecting_face(s, [](FaceId, FaceId) {});
+  t_sos_ties = 0;
+  t_count_all = true;
+  struct Reset { ~Reset() { t_count_all = false; } } reset;
+  const bool r = foreach_intersecting_face(s, [](FaceId, FaceId) {});
+  *sos_ties = t_sos_ties;
+  return r;
 }
 
 } // namespace gts

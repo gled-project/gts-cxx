@@ -71,7 +71,9 @@ private:
 // whether there is any.
 bool foreach_intersecting_face(const Surface& s, const std::function<void(FaceId, FaceId)>& f);
 
-// gts_surface_is_self_intersecting, as a yes or no.
-bool is_self_intersecting(const Surface& s);
+// gts_surface_is_self_intersecting, as a yes or no. With sos_ties, also
+// the number of orientation tests that were exactly zero, so that
+// Simulation of Simplicity decided them, as in a flat surface.
+bool is_self_intersecting(const Surface& s, std::size_t* sos_ties = nullptr);
 
 } // namespace gts
