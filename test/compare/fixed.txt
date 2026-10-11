@@ -38,3 +38,12 @@ curvature-torus-bounded     lines mean=0 gauss=1 | mean=0 gauss=0
 hsurface-horse5-150         valid
 hsurface-horse5-450         valid
 hsurface-delaunay-800       ok
+
+# GTS writes the empty list of faces of a split at a boundary as an empty
+# line, and its reader skips empty lines, so it cannot read the progressive
+# surface of an open surface. gts-cxx reads each list from its own line.
+psurface-read-delaunay      ok
+
+# GTS's graph reader skips the empty lines of the nodes its writer writes,
+# and reads edges as nodes. gts-cxx reads a line for each node.
+graph-horse5-io             ok

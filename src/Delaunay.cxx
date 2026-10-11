@@ -633,6 +633,18 @@ std::vector<EdgeId> delaunay_add_constraint(Surface& s, EdgeId ce)
   Geometrium& g = c.g;
   set_constraint(g, ce);
   const VertexId v1 = g.edge(ce).v[0], v2 = g.edge(ce).v[1];
+  // Where an edge of s joins v1 and v2 already, GTS left c out of s and
+  // that edge unconstrained; c takes its faces instead. See QUIRKS.md.
+  for (EdgeId e : g.edges_of(v1))
+    if (e != ce && g.other_vertex(e, v1) == v2)
+    {
+      bool in_s = false;
+      for (FaceId f : g.faces_of(e)) in_s = in_s || s.contains(f);
+      if ( ! in_s) continue;
+      g.replace_edge(e, ce);
+      g.destroy(e);
+      return {};
+    }
   std::vector<EdgeId> left, right, constraints;
   FaceId ref;
   {

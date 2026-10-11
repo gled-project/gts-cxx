@@ -30,9 +30,9 @@ coordinates, and read surfaces the C library wrote (`@REF@` in
 `cases.txt`), so that both programs measure the same input. The summaries
 include whether the surface intersects itself. On 2026-10-11:
 
-- 185 cases agree with the C library in every value to 1e-9, and so do
+- 184 cases agree with the C library in every value to 1e-9, and so do
   the surfaces written by the C++ library when read by the C one.
-- 15 are in `test/compare/fixed.txt`: gts-cxx fixes an error of GTS there,
+- 17 are in `test/compare/fixed.txt`: gts-cxx fixes an error of GTS there,
   or departs from it on purpose (see `QUIRKS.md`), so the results differ,
   or the C library crashes. `compare.py` runs the check given for each
   instead: the iso-surfaces of the bounded and the body-centred tetrahedra
@@ -41,7 +41,8 @@ include whether the surface intersects itself. On 2026-10-11:
   only in the sign of the volume, as their faces are oriented the other
   way; in the curvature of the C library's bounded torus, only vertices
   where gts-cxx gives no Gaussian curvature may differ; the hierarchical
-  surfaces, which crash GTS, must succeed.
+  surfaces, which crash GTS, and the graph and the progressive surface GTS
+  cannot read back must succeed.
 - 16 are in `test/compare/ties.txt`: GTS chooses between equal costs or
   candidates in the order of its hash tables, which follows memory
   addresses. `compare.sh` checks instead that the two surfaces lie within
@@ -50,10 +51,9 @@ include whether the surface intersects itself. On 2026-10-11:
   face or node is taken once.
 - 1 is self-tied: a flat surface, whose self-intersection Simulation of
   Simplicity decides; gts-cxx counts those ties (`self_sos_ties`).
-- 82 are degenerate booleans, and 8 crash in the C library: six
-  booleans; the refinement of `crossing.gts`, which does not end (see
-  `QUIRKS.md`); and reading back the progressive surface of an open
-  surface, an error gts-cxx keeps. gts-cxx reports the errors. See below.
+- 82 are degenerate booleans, and 7 crash in the C library: six
+  booleans, and the refinement of `crossing.gts`, which does not end
+  (see `QUIRKS.md`), where gts-cxx reports the error. See below.
 
 82 boolean cases are degenerate: the two surfaces touch or have coplanar
 faces, and Simulation of Simplicity decides the exactly degenerate

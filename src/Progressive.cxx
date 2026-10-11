@@ -530,17 +530,24 @@ std::expected<std::unique_ptr<PSurface>, ReadError> PSurface::read(Geometrium& g
       f.next();
     }
   };
-  // GTS skipped blank lines after each line, also those of lists without
-  // faces, which it then could not read; see QUIRKS.md.
+  // The rest of the line and its newline, but not the blank lines after
+  // it, which may be lists without faces. GTS skipped them, and failed to
+  // read what it wrote for a split at a boundary; see QUIRKS.md.
+  auto end_line = [&] {
+    while ( ! f.failed() && f.type() != detail::Tokenizer::None && f.ch() != '\n') f.next();
+    if (f.ch() == '\n') f.next();
+  };
   auto read_faces = [&](std::vector<FaceId>& a) {
-    do
+    while ( ! f.failed() && f.type() == detail::Tokenizer::Int)
     {
       const std::size_t it = read_index(faces.size(), "face index", "face");
       if (f.failed()) return;
       a.push_back(faces[it - 1]);
       f.next();
-    } while ( ! f.failed() && f.ch() != '\n' && f.type() != detail::Tokenizer::None);
-    f.skip_line();
+    }
+    if ( ! f.failed() && f.ch() != '\n' && f.type() != detail::Tokenizer::None)
+      fail("expecting an integer (face index)");
+    end_line();
   };
 
   // gts_psurface_read_vertex, until the end.
@@ -580,7 +587,7 @@ std::expected<std::unique_ptr<PSurface>, ReadError> PSurface::read(Geometrium& g
       if (f.type() != detail::Tokenizer::Int) { fail("expecting an integer (flags)"); break; }
       cf.flags = unsigned(std::atol(f.token().c_str()));
       f.next();
-      f.skip_line();
+      end_line();
       read_faces(cf.a1);
       if ( ! f.failed()) read_faces(cf.a2);
       if (f.failed()) break;

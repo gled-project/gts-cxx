@@ -70,43 +70,45 @@ fixes change, with the check each must pass instead of equality with GTS.
   the input), GTS gave up the new vertex if that edge was the last in the
   vertex's list, even when the vertex still had other edges. The new
   vertex is now given up only when it has no edges left.
+- `delaunay_add_constraint()`: where an edge of the triangulation already
+  joined the two vertices of the constraint, GTS left the constraint out of
+  the triangulation, as an edge without faces, and the existing edge
+  unconstrained, so that `gts_delaunay_remove_hull()` then removed faces
+  the constraint should have kept. GTS's example `delaunay.c` makes its
+  constraints before it adds the vertices, so the triangulation takes them
+  as its edges and the case does not arise there. The constraint now takes
+  the faces of the existing edge.
+- The box-triangle test of `tribox3.c`, which `overlaps()` ports, called
+  `fabsf()` on doubles, as left from the change from float to double in
+  2004, so the edge components lost half their bits in the bounds of the
+  separating axes. It uses `fabs()`.
+- `split_components()`, GTS's `gts_surface_split`, crossed every edge with
+  exactly two faces, of any surface, and took a face for a component unless
+  it was in a second surface: a face of another surface across such an edge
+  joined the component, and a face of the surface that was also in another
+  surface was never in any. It crosses the edges with exactly two faces of
+  the surface, and takes each face of the surface once.
+- `strips()`, GTS's `gts_surface_strip`, took as neighbours the faces of
+  every surface on a face's edges, and failed an assertion on one that was
+  not in the surface. It takes those of the surface.
+- `PSurface::read()`: GTS writes the empty list of faces of a split at a
+  boundary as an empty line, and its reader skipped blank lines, so it read
+  the next line in its place. It could not read back the progressive
+  surface of any open surface. gts-cxx reads each list from its own line;
+  it reads GTS's files of open surfaces too.
+- `read_graph()`: GTS's graph reader skipped the blank lines of the nodes
+  that its writer writes for plain nodes, then took edge lines for node
+  lines, and could not read back its own graphs. gts-cxx reads a line for
+  each node.
+- `read_jostle()`: GTS's reader of the Jostle format did not move past a
+  neighbour numbered after the node, and looped for ever on the first such
+  line, so it read no graph with an edge; and it took a node without
+  neighbours, an empty line, for an error. gts-cxx reads every neighbour
+  and empty lines.
 
 ## Errors
 
-- `delaunay_add_constraint()`: where an edge of the triangulation already
-  joins the two vertices of the constraint, the constraint stays out of
-  the triangulation, as an edge without faces, and the existing edge stays
-  unconstrained, so that `delaunay_remove_hull()` then removes faces the
-  constraint should keep. GTS's example `delaunay.c` makes its constraints
-  before it adds the vertices, so that the triangulation takes them as its
-  edges, and the case does not arise there. The constraint could take the
-  faces of the existing edge.
-- `overlaps()`, the box-triangle test of `tribox3.c`, calls `fabsf()` on
-  doubles, as left from the change from float to double in 2004, so the
-  edge components lose half their bits in the bounds of the separating
-  axes. It should use `fabs()`.
-- `split_components()`, GTS's `gts_surface_split`, crosses every edge with
-  exactly two faces, of any surface, and takes a face for a component
-  unless it is in a second surface: a face of another surface across such
-  an edge joins the component, and a face of the surface that is also in
-  another surface is in no component. It should cross the edges with
-  exactly two faces of the surface, and take each face of the surface once.
-- `strips()`, GTS's `gts_surface_strip`, takes as neighbours the faces of
-  every surface on a face's edges, and throws where one is not in the
-  surface, where GTS failed an assertion. It should take those of the
-  surface.
-- `PSurface::read()`: the empty list of faces of a split at a boundary is
-  written as an empty line, and the reader skips blank lines, so it reads
-  the next line in its place. It cannot read back the progressive surface
-  of an open surface, nor can GTS. It should read each list from its own
-  line.
-- `read_graph()`: the lines of plain nodes are empty, and the reader skips
-  blank lines, then takes edge lines for node lines, so it cannot read back
-  a graph, nor can GTS. It should read a line for each node.
-- `read_jostle()` does not move past a neighbour numbered after the node,
-  and loops for ever on the first such line, as GTS's reader does, so it
-  reads no graph with an edge; and it takes a node without neighbours, an
-  empty line, for an error. It should read every neighbour and empty lines.
+None known.
 
 ## Choices
 

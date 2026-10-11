@@ -83,8 +83,7 @@ public:
 
   // gts_psurface_open, gts_psurface_read_vertex and gts_psurface_close: a
   // progressive surface written by write(), or by GTS, read into a new
-  // surface of g at its finest level. As GTS, it cannot read one with a
-  // split at a boundary; see QUIRKS.md.
+  // surface of g at its finest level.
   static std::expected<std::unique_ptr<PSurface>, ReadError> read(Geometrium& g, std::istream& in);
 
   Surface&       surface()       { return *m_s; }

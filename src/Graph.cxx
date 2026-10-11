@@ -278,8 +278,20 @@ void write_dot(const NodeSet& g, std::ostream& out)
   out << "}\n";
 }
 
+namespace {
+
+// The rest of the line and its newline, but no blank line after it.
+void end_line(detail::Tokenizer& f)
+{
+  while ( ! f.failed() && f.type() != detail::Tokenizer::None && f.ch() != '\n') f.next();
+  if (f.ch() == '\n') f.next();
+}
+
+} // namespace
+
 // GTS skipped every blank line after the header, which took the empty lines
-// of its own nodes for one, and then read edges as nodes; see QUIRKS.md.
+// of its own nodes for one, and then read edges as nodes; gts-cxx reads a
+// line for each node. See QUIRKS.md.
 std::expected<NodeSet, ReadError> read_graph(Graph& gr, std::istream& in)
 {
   using T = detail::Tokenizer;
@@ -294,7 +306,7 @@ std::expected<NodeSet, ReadError> read_graph(Graph& gr, std::istream& in)
   const long nn = count("number of nodes");
   const long ne = f.failed() ? 0 : count("number of edges");
   if (f.failed()) return std::unexpected(f.error());
-  f.skip_line();
+  end_line(f);
 
   NodeSet g(gr);
   std::vector<GNodeId> nodes;
@@ -302,9 +314,9 @@ std::expected<NodeSet, ReadError> read_graph(Graph& gr, std::istream& in)
   {
     nodes.push_back(gr.add_node());
     g.add(nodes.back());
-    f.skip_line();
+    end_line(f);
   }
-  for (long n = 0; n < ne && ! f.failed(); )
+  for (long n = 0; n < ne && ! f.failed(); ++n)
   {
     long idx[2];
     for (int k = 0; k < 2 && ! f.failed(); ++k)
@@ -317,15 +329,12 @@ std::expected<NodeSet, ReadError> read_graph(Graph& gr, std::istream& in)
     }
     if (f.failed()) break;
     gr.add_edge(nodes[idx[0] - 1], nodes[idx[1] - 1]);
-    if (++n < ne) f.skip_line();
+    end_line(f);
   }
   if (f.failed()) return std::unexpected(f.error());
   return g;
 }
 
-// As GTS's reader, which did not move past a neighbour numbered after the
-// node, and looped for ever there, and stopped on the newline at the end of
-// each node's line; see QUIRKS.md.
 std::expected<NodeSet, ReadError> read_jostle(Graph& gr, std::istream& in)
 {
   using T = detail::Tokenizer;
@@ -341,29 +350,33 @@ std::expected<NodeSet, ReadError> read_jostle(Graph& gr, std::istream& in)
   NodeSet g(gr);
   std::vector<GNodeId> nodes;
   long n = 0;
-  while (n < nn && ! f.failed())
+  // GTS did not move past a neighbour numbered after the node, and looped
+  // for ever there, and took a node without neighbours for an error; see
+  // QUIRKS.md. A line may list no neighbours.
+  while (n < nn && ! f.failed() && f.type() != T::None)
   {
     // GtsNGNode: the line of the node is its id.
     const GNodeId node = gr.add_node(1.f, f.line());
     nodes.push_back(node);
     ++n;
     g.add(node);
-    do
+    while ( ! f.failed() && f.type() == T::Int)
     {
-      if (f.type() != T::Int) f.fail("expecting an integer (node index)");
+      const long i = std::atol(f.token().c_str());
+      if (i <= 0 || i > nn) f.fail(std::format("node index `{}' is out of range `[1,{}]'", i, nn));
+      else if (i == n)      f.fail(std::format("node index `{}' references itself", i));
       else
       {
-        const long i = std::atol(f.token().c_str());
-        if (i <= 0 || i > nn) f.fail(std::format("node index `{}' is out of range `[1,{}]'", i, nn));
-        else if (i == n)      f.fail(std::format("node index `{}' references itself", i));
-        else if (i < n)
+        if (i < n)
         {
           gr.add_edge(node, nodes[i - 1]);
           --ne;
-          f.next();
         }
+        f.next();
       }
-    } while ( ! f.failed() && f.ch() != '\n');
+    }
+    if ( ! f.failed() && f.type() != T::None && f.ch() != '\n') f.fail("expecting an integer (node index)");
+    if (f.ch() == '\n') f.next();
   }
   if ( ! f.failed())
   {

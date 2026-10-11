@@ -331,8 +331,8 @@ bool BBTree::is_overlapping(int n, const BBox& b) const
 //==============================================================================
 //
 // AABB-triangle overlap test by Tomas Akenine-Möller (2001), changed from
-// float to double by Stéphane Popinet (2004), who kept fabsf(), which
-// rounds the edge components to float; see QUIRKS.md.
+// float to double by Stéphane Popinet (2004). GTS kept fabsf(), which
+// rounds the edge components to float; gts-cxx uses fabs(); see QUIRKS.md.
 
 namespace {
 
@@ -388,11 +388,11 @@ bool tri_box_overlap(const double boxcenter[3], const double boxhalfsize[3], con
     p0 = a*v0[X] - b*v0[Y]; p1 = a*v1[X] - b*v1[Y]; minmax(p0, p1); rad = fa*h[X] + fb*h[Y]; return out(); };
 
   // The nine cross products of the edges with the axes.
-  double fex = std::fabs(float(e0[X])), fey = std::fabs(float(e0[Y])), fez = std::fabs(float(e0[Z]));
+  double fex = std::fabs(e0[X]), fey = std::fabs(e0[Y]), fez = std::fabs(e0[Z]);
   if (x01(e0[Z], e0[Y], fez, fey) || y02(e0[Z], e0[X], fez, fex) || z12(e0[Y], e0[X], fey, fex)) return false;
-  fex = std::fabs(float(e1[X])); fey = std::fabs(float(e1[Y])); fez = std::fabs(float(e1[Z]));
+  fex = std::fabs(e1[X]); fey = std::fabs(e1[Y]); fez = std::fabs(e1[Z]);
   if (x01(e1[Z], e1[Y], fez, fey) || y02(e1[Z], e1[X], fez, fex) || z0(e1[Y], e1[X], fey, fex)) return false;
-  fex = std::fabs(float(e2[X])); fey = std::fabs(float(e2[Y])); fez = std::fabs(float(e2[Z]));
+  fex = std::fabs(e2[X]); fey = std::fabs(e2[Y]); fez = std::fabs(e2[Z]);
   if (x2(e2[Z], e2[Y], fez, fey) || y1(e2[Z], e2[X], fez, fex) || z12(e2[Y], e2[X], fey, fex)) return false;
 
   // The axes: the box of the triangle against the box.

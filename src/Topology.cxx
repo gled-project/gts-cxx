@@ -333,14 +333,20 @@ std::optional<std::pair<FaceId, unsigned>> SurfaceTraverse::next()
 
 namespace {
 
-// traverse_boundary and traverse_remaining: a new component from f, unless
-// f is in another surface besides orig. traverse_manifold crosses each edge
-// with exactly two faces, of any surface, to a face in no second surface;
-// see QUIRKS.md.
-void grow_component(Surface& orig, FaceId f, std::vector<Surface*>& components)
+// The other face of s on e, when e has exactly two faces of s.
+FaceId other_of_two(const Surface& s, EdgeId e, FaceId f)
 {
+  const auto m = manifold_faces(s, e);
+  if ( ! m) return FaceId();
+  return (*m)[0] == f ? (*m)[1] : (*m)[0];
+}
+
+// traverse_boundary and traverse_remaining: a new component from f, unless
+// f is in one already.
+void grow_component(Surface& orig, FaceId f, std::vector<bool>& taken, std::vector<Surface*>& components)
+{
+  if (taken[f.i]) return;
   Geometrium& g = orig.geometrium();
-  if (g.face(f).surfaces != 1) return;
   Surface& s = g.new_surface();
   components.push_back(&s);
 
@@ -350,15 +356,13 @@ void grow_component(Surface& orig, FaceId f, std::vector<Surface*>& components)
   {
     const FaceId t = stack.back();
     stack.pop_back();
-    if (g.face(t).surfaces > 1 || s.contains(t)) continue;
+    if (taken[t.i]) continue;
+    taken[t.i] = true;
     s.add_face(t);
     const auto E = g.face(t).e;
     for (int k = 2; k >= 0; --k)
-    {
-      std::vector<FaceId> ring;
-      for (FaceId x : g.faces_of(E[k])) ring.push_back(x);
-      if (ring.size() == 2) stack.push_back(ring[0] != t ? ring[0] : ring[1]);
-    }
+      if (const FaceId n = other_of_two(orig, E[k], t); n.valid() && ! taken[n.i])
+        stack.push_back(n);
   }
 
   // non_manifold_edges: the faces of s on an edge with more than two of
@@ -368,7 +372,11 @@ void grow_component(Surface& orig, FaceId f, std::vector<Surface*>& components)
     if (face_number(s, e) > 2)
       for (FaceId t : g.faces_of(e))
         if (s.contains(t)) add_unique(non_manifold, t);
-  for (FaceId t : non_manifold) s.remove_face(t);
+  for (FaceId t : non_manifold)
+  {
+    taken[t.i] = false;
+    s.remove_face(t);
+  }
 }
 
 } // namespace
@@ -376,13 +384,14 @@ void grow_component(Surface& orig, FaceId f, std::vector<Surface*>& components)
 std::vector<Surface*> split_components(Surface& s)
 {
   const Geometrium& g = s.geometrium();
+  std::vector<bool> taken(g.face_capacity());
   std::vector<Surface*> components;
   // Boundary components first.
   for (EdgeId e : s.edges())
     if (const FaceId f = boundary_face(g, e, &s); f.valid())
-      grow_component(s, f, components);
+      grow_component(s, f, taken, components);
   for (FaceId f : s.faces())
-    grow_component(s, f, components);
+    grow_component(s, f, taken, components);
   std::reverse(components.begin(), components.end());
   return components;
 }

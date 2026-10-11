@@ -1221,14 +1221,9 @@ static void test_delaunay()
     const FaceId et = enclosing_triangle(q, sq, 100.);
     const auto eh = q.vertices_of(et);
     d.add_face(et);
-    // The constraints are made before the vertices are added, as GTS's
-    // example delaunay.c makes them, so that the triangulation takes them.
     std::vector<VertexId> v;
-    for (Vec3 p : sq) v.push_back(q.add_vertex(p));
-    std::vector<EdgeId> sides;
-    for (int k = 0; k < 4; ++k) sides.push_back(q.add_edge(v[k], v[(k + 1) % 4]));
-    for (VertexId x : v) delaunay_add_vertex(d, x);
-    for (EdgeId e : sides) delaunay_add_constraint(d, e);
+    for (Vec3 p : sq) { v.push_back(q.add_vertex(p)); delaunay_add_vertex(d, v.back()); }
+    for (int k = 0; k < 4; ++k) delaunay_add_constraint(d, q.add_edge(v[k], v[(k + 1) % 4]));
     {
       KeepOrphans keep(q, { .vertices = true });
       for (VertexId h : eh) q.destroy(h);
@@ -1462,6 +1457,19 @@ static void test_graph()
     CHECK(g.size() == s.face_number() && expanded == pg.splits().size() && edges_of(g).size() == s.edge_number());
   }
 
+  std::stringstream io;
+  write_graph(g, io);
+  Graph gr2;
+  auto g2 = read_graph(gr2, io);
+  CHECK(g2 && g2->size() == g.size() && edges_of(*g2).size() == edges_of(g).size());
+
+  std::istringstream jostle("4 2\n2\n1 3\n2\n\n");
+  Graph gr3;
+  auto g3 = read_jostle(gr3, jostle);
+  CHECK(g3 && g3->size() == 4 && edges_of(*g3).size() == 2);
+  std::istringstream bad("3 1\n2\n1\n");
+  Graph gr4;
+  CHECK( ! read_jostle(gr4, bad).has_value());
 }
 
 static void test_isoslice()

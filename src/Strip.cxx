@@ -35,14 +35,7 @@ struct Strips
 
   explicit Strips(const Surface& s) : g(s.geometrium()), td(g.face_capacity())
   {
-    // gts_triangle_neighbors: of any surface. GTS failed an assertion on
-    // one that is not in s; see QUIRKS.md.
-    for (FaceId f : s.faces())
-    {
-      td[f.i].neighbors = face_neighbors(g, f);
-      for (FaceId t : td[f.i].neighbors)
-        if ( ! s.contains(t)) throw std::logic_error("gts::strips: a neighbouring face is not in the surface");
-    }
+    for (FaceId f : s.faces()) td[f.i].neighbors = face_neighbors(g, f, &s);
     for (FaceId f : s.faces()) td[f.i].pos = heap.insert(f, double(unused_neighbors2(f).size()));
   }
 

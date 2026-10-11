@@ -167,11 +167,9 @@ void write_graph(const NodeSet& g, std::ostream& out);
 // gts_graph_write_dot
 void write_dot(const NodeSet& g, std::ostream& out);
 // gts_graph_read: a graph written by write_graph(), into gr, as a new set.
-// As GTS, it reads the lines of plain nodes wrongly; see QUIRKS.md.
 std::expected<NodeSet, ReadError> read_graph(Graph& gr, std::istream& in);
 // gts_graph_read_jostle: a graph in the format of Jostle and the Graph
-// Partitioning Archive; each node's data is its line number. As GTS, it
-// loops for ever on a graph with an edge; see QUIRKS.md.
+// Partitioning Archive; each node's data is its line number.
 std::expected<NodeSet, ReadError> read_jostle(Graph& gr, std::istream& in);
 
 // gts_surface_graph_new: the dual graph of s, a node for each face, with

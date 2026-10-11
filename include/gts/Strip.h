@@ -18,8 +18,7 @@ namespace gts {
 // face with the fewest unused faces within two steps of it, takes the
 // neighbour with the fewest, and grows forward and backward with faces
 // that turn left and right in turn, so that a strip of n faces is drawn
-// with n + 2 vertices. Throws std::logic_error where a face of another
-// surface is a neighbour, where GTS failed an assertion.
+// with n + 2 vertices. Faces of other surfaces are not neighbours.
 std::vector<std::vector<FaceId>> strips(const Surface& s);
 
 } // namespace gts
