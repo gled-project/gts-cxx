@@ -10,7 +10,8 @@ reading and writing of `.gts` files, and writing for Geomview and VTK; the
 edge heap, tessellation, refinement by edge splitting, generated spheres,
 coarsening by edge collapse with the volume-optimized vertex and cost;
 iso-surfaces by marching cubes, on cartesian and other structured grids, and
-by tetrahedra; Shewchuk's robust predicates, bounding-box trees, booleans,
+by tetrahedra, and, beyond GTS, by marching cubes from seeds over only the
+cells the surface crosses; Shewchuk's robust predicates, bounding-box trees, booleans,
 the test for self-intersection and the cluster grid. It has the distances
 between points, faces, edges and surfaces, the test for a point inside a
 surface, discrete curvature, the kd-tree, the merging of vertices and edges,

@@ -1,10 +1,12 @@
 // Iso-surfaces: the surface f(x, y, z) = iso of a function sampled on a
 // cartesian grid, by marching cubes (isosurface_cartesian) or by splitting
-// each cube into tetrahedra (isosurface_tetra and its two variants).
+// each cube into tetrahedra (isosurface_tetra and its two variants); and,
+// beyond GTS, by marching cubes from seeds over the cells the surface
+// crosses.
 //
 // The function is given plane by plane, as in GTS: a PlaneFunc fills the
 // values of one plane z = g.z of the grid. sample() makes one from a function
-// of a point.
+// of a point, which the method from seeds takes directly.
 //
 // Copyright (C) 1999 Stéphane Popinet (GTS: iso.c)
 // Copyright (C) 2002 Gert Wollny (GTS: isotetra.c)
@@ -18,6 +20,7 @@
 
 #include <array>
 #include <functional>
+#include <span>
 #include <vector>
 
 namespace gts {
@@ -131,6 +134,32 @@ void isosurface_slice(Surface& s, IsoSlice& s1, IsoSlice& s2);
 
 // gts_isosurface_cartesian: marching cubes, slice by slice.
 void isosurface_cartesian(Surface& s, CartesianGrid g, const PlaneFunc& f, double iso);
+
+// A cube of a grid, from point (i, j, k) to point (i + 1, j + 1, k + 1).
+struct GridCell
+{
+  unsigned i = 0, j = 0, k = 0;
+  friend auto operator<=>(const GridCell&, const GridCell&) = default;
+};
+
+// The cells of g that hold the points, and those within band cells of
+// them; sorted, each once.
+std::vector<GridCell> cells_near(const CartesianGrid& g, std::span<const Vec3> points, unsigned band = 0);
+// The same for the vertices of s, such as the surface of a previous step.
+std::vector<GridCell> cells_near(const CartesianGrid& g, const Surface& s, unsigned band = 0);
+// The cells round the point where f = iso crosses the segment from a to b,
+// found by bisection; none when f - iso has the same sign at a and b.
+std::vector<GridCell> cells_crossing(const CartesianGrid& g, const std::function<double(Vec3)>& f, double iso,
+                                     Vec3 a, Vec3 b);
+
+// Marching cubes from seed cells, beyond GTS: evaluates f only on the cells
+// reached from the seeds through cube faces the surface crosses, so it
+// makes only the parts of the surface through the seeds, and any part that
+// shares a cell with them. Seeds the surface does not cross are skipped. The faces are made in the order of
+// isosurface_cartesian(), so for a surface of one part the two give the
+// same faces.
+void isosurface_cartesian(Surface& s, CartesianGrid g, const std::function<double(Vec3)>& f, double iso,
+                          std::span<const GridCell> seeds);
 
 // gts_isosurface_tetra: each cube of the grid split into five tetrahedra.
 void isosurface_tetra(Surface& s, CartesianGrid g, const PlaneFunc& f, double iso);

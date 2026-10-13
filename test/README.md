@@ -21,25 +21,26 @@ with `compare.py`: integers exactly, floating-point values to a relative
 tolerance (default 1e-9). It then reads every surface the C++ library wrote
 back through the C library, to check the writer.
 
-All 307 cases run through both libraries: the 240 of the port of what
+All 310 cases run through both libraries: the 240 of the port of what
 Gled calls, 21 for the distances, the inside test, curvature, merging and
-the centres, and 46 for what was ported after: Delaunay triangulation, the
+the centres, 46 for what was ported after: Delaunay triangulation, the
 iso-surface slices, triangle strips, progressive and hierarchical surfaces,
-and graphs. The 21 print a line per vertex or sample point, keyed by its
+and graphs, and 3 for marching cubes from a seed, which gts-cxx adds and
+which the C side runs as GTS's full marching cubes. The 21 print a line per vertex or sample point, keyed by its
 coordinates, and read surfaces the C library wrote (`@REF@` in
 `cases.txt`), so that both programs measure the same input. The summaries
-include whether the surface intersects itself. On 2026-10-11:
+include whether the surface intersects itself. On 2026-10-13:
 
 - 184 cases agree with the C library in every value to 1e-9, and so do
   the surfaces written by the C++ library when read by the C one.
-- 17 are in `test/compare/fixed.txt`: gts-cxx fixes an error of GTS there,
+- 20 are in `test/compare/fixed.txt`: gts-cxx fixes an error of GTS there,
   or departs from it on purpose (see `QUIRKS.md`), so the results differ,
   or the C library crashes. `compare.py` runs the check given for each
   instead: the iso-surfaces of the bounded and the body-centred tetrahedra
   must be closed, manifold and orientable, also when the C library reads
-  them back; those of the cartesian method and of the slices may differ
-  only in the sign of the volume, as their faces are oriented the other
-  way; in the curvature of the C library's bounded torus, only vertices
+  them back; those of the cartesian method, also from a seed, and of the
+  slices may differ only in the sign of the volume, as their faces are
+  oriented the other way; in the curvature of the C library's bounded torus, only vertices
   where gts-cxx gives no Gaussian curvature may differ; the hierarchical
   surfaces, which crash GTS, and the graph and the progressive surface GTS
   cannot read back must succeed.

@@ -6,9 +6,16 @@
 
 #include "gts/Iso.h"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
+#include <cstdint>
 #include <map>
 #include <stdexcept>
+#include <tuple>
+#include <type_traits>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace gts {
@@ -127,53 +134,57 @@ constexpr unsigned kNext[12][2][3] = {
   {{3, 7, 0}, {8, 5, 11}},  {{11, 4, 8}, {1, 6, 2}},  {{2, 5, 1}, {9, 7, 10}},  {{10, 6, 9}, {0, 4, 3}},
   {{5, 11, 4}, {0, 9, 1}},  {{1, 8, 0}, {7, 10, 6}},  {{6, 9, 7}, {3, 11, 2}},  {{2, 10, 3}, {4, 8, 5}}};
 
+// The faces of one cube, whose crossing on edge e is at(e). The crossings
+// are walked round in loops, and each loop of more than two is fanned into
+// faces from its first crossing.
+template <class At>
+void cube_faces(Surface& s, At&& at)
+{
+  Geometrium& g = s.geometrium();
+  // GTS marked the visited vertices with their reserved pointer.
+  bool visited[12] = {};
+  for (unsigned l = 0; l < 12; l++)
+  {
+    std::remove_reference_t<decltype(at(0))>* va[12];
+    unsigned nv = 0, e = l;
+    auto* ov = &at(e);
+    while (ov->exists && ! visited[e])
+    {
+      va[nv++] = ov;
+      visited[e] = true;
+      const unsigned* ne = kNext[e][ov->orientation];
+      unsigned m = 0;
+      do { e = ne[m++]; ov = &at(e); } while (m < 3 && ! ov->exists);
+    }
+    if (nv > 2)
+    {
+      for (unsigned m = 0; m < nv; ++m)
+        if ( ! va[m]->v.valid()) va[m]->v = g.add_vertex(va[m]->p);
+      EdgeId e1 = edge_between(g, va[0]->v, va[1]->v);
+      for (unsigned m = 1; m < nv - 1; m++)
+      {
+        const EdgeId e2 = edge_between(g, va[m]->v, va[m + 1]->v);
+        const EdgeId e3 = edge_between(g, va[m + 1]->v, va[0]->v);
+        // Towards f < iso: GTS's order, (e1, e2, e3), reverted.
+        s.add_face(g.add_face(e2, e1, e3));
+        e1 = e3;
+      }
+    }
+  }
+}
+
 } // namespace
 
-// In each cube, the crossings are walked round in loops, and each loop of
-// more than two is fanned into faces from its first crossing.
 void isosurface_slice(Surface& s, IsoSlice& s1, IsoSlice& s2)
 {
   if (s1.m_nx != s2.m_nx || s1.m_ny != s2.m_ny)
     throw std::invalid_argument("gts::isosurface_slice: slices of different sizes");
-  Geometrium& g = s.geometrium();
   IsoSlice* slices[2] = { &s1, &s2 };
   for (unsigned j = 0; j + 1 < s1.m_nx; j++)
     for (unsigned k = 0; k + 1 < s1.m_ny; k++)
-    {
-      auto at = [&](unsigned e) -> IsoSlice::Crossing& {
+      cube_faces(s, [&](unsigned e) -> IsoSlice::Crossing& {
         return slices[kCube[e][1]]->at(kCube[e][0], j + kCube[e][2], k + kCube[e][3]);
-      };
-      // GTS marked the visited vertices with their reserved pointer.
-      bool visited[12] = {};
-      for (unsigned l = 0; l < 12; l++)
-      {
-        IsoSlice::Crossing* va[12];
-        unsigned nv = 0, e = l;
-        IsoSlice::Crossing* ov = &at(e);
-        while (ov->exists && ! visited[e])
-        {
-          va[nv++] = ov;
-          visited[e] = true;
-          const unsigned* ne = kNext[e][ov->orientation];
-          unsigned m = 0;
-          do { e = ne[m++]; ov = &at(e); } while (m < 3 && ! ov->exists);
-        }
-        if (nv > 2)
-        {
-          for (unsigned m = 0; m < nv; ++m)
-            if ( ! va[m]->v.valid()) va[m]->v = g.add_vertex(va[m]->p);
-          EdgeId e1 = edge_between(g, va[0]->v, va[1]->v);
-          for (unsigned m = 1; m < nv - 1; m++)
-          {
-            const EdgeId e2 = edge_between(g, va[m]->v, va[m + 1]->v);
-            const EdgeId e3 = edge_between(g, va[m + 1]->v, va[0]->v);
-            // Towards f < iso: GTS's order, (e1, e2, e3), reverted.
-            s.add_face(g.add_face(e2, e1, e3));
-            e1 = e3;
-          }
-        }
-      }
-    }
+      });
 }
 
 namespace {
@@ -492,6 +503,148 @@ void isosurface_cartesian(Surface& s, CartesianGrid g, const PlaneFunc& f, doubl
   }
   slice2->fill_cartesian(g, g.nz - 1, *f2, nullptr, iso);
   isosurface_slice(s, *slice1, *slice2);
+}
+
+//==============================================================================
+// Marching cubes from seeds
+//==============================================================================
+
+std::vector<GridCell> cells_near(const CartesianGrid& g, std::span<const Vec3> points, unsigned band)
+{
+  check_grid(g, "cells_near");
+  // The cells from c - band to c + band along one axis, clipped to the grid.
+  auto range = [band](double x, double x0, double dx, unsigned n, long& lo, long& hi) {
+    const double c = std::floor((x - x0) / dx);
+    if ( ! std::isfinite(c)) return false;
+    const double last = n - 2;
+    if (c + band < 0. || c - band > last) return false;
+    lo = long(std::max(c - band, 0.));
+    hi = long(std::min(c + band, last));
+    return true;
+  };
+  std::vector<GridCell> cells;
+  for (const Vec3& p : points)
+  {
+    long i0, i1, j0, j1, k0, k1;
+    if ( ! range(p.x, g.x, g.dx, g.nx, i0, i1) || ! range(p.y, g.y, g.dy, g.ny, j0, j1) ||
+         ! range(p.z, g.z, g.dz, g.nz, k0, k1))
+      continue;
+    for (long i = i0; i <= i1; ++i)
+      for (long j = j0; j <= j1; ++j)
+        for (long k = k0; k <= k1; ++k)
+          cells.push_back({ unsigned(i), unsigned(j), unsigned(k) });
+  }
+  std::ranges::sort(cells);
+  cells.erase(std::ranges::unique(cells).begin(), cells.end());
+  return cells;
+}
+
+std::vector<GridCell> cells_near(const CartesianGrid& g, const Surface& s, unsigned band)
+{
+  std::vector<Vec3> points;
+  for (VertexId v : s.vertices()) points.push_back(s.geometrium().vertex(v).p);
+  return cells_near(g, points, band);
+}
+
+std::vector<GridCell> cells_crossing(const CartesianGrid& g, const std::function<double(Vec3)>& f, double iso,
+                                     Vec3 a, Vec3 b)
+{
+  double fa = f(a) - iso;
+  if ( ! crosses(fa, f(b) - iso)) return {};
+  const double step = std::min({ g.dx, g.dy, g.dz }) / 4;
+  for (int n = 0; n < 100 && distance(a, b) > step; ++n)
+  {
+    const Vec3 m = 0.5 * (a + b);
+    const double fm = f(m) - iso;
+    if (crosses(fa, fm)) b = m;
+    else                 { a = m; fa = fm; }
+  }
+  const Vec3 m = 0.5 * (a + b);
+  return cells_near(g, std::span(&m, 1), 1);
+}
+
+// The cells are found first, by a flood fill through the cube faces with
+// crossings, and then made in the order of isosurface_cartesian().
+void isosurface_cartesian(Surface& s, CartesianGrid g, const std::function<double(Vec3)>& f, double iso,
+                          std::span<const GridCell> seeds)
+{
+  check_grid(g, "isosurface_cartesian");
+  const std::uint64_t nx = g.nx, ny = g.ny;
+  auto point_id = [&](unsigned i, unsigned j, unsigned k) { return (k * ny + j) * nx + i; };
+
+  // f - iso at the points, each evaluated once.
+  std::unordered_map<std::uint64_t, double> values;
+  auto value = [&](unsigned i, unsigned j, unsigned k) {
+    auto [it, made] = values.try_emplace(point_id(i, j, k));
+    if (made) it->second = f(grid_point(g, i, j, k)) - iso;
+    return it->second;
+  };
+
+  std::vector<GridCell> cells;
+  std::unordered_set<std::uint64_t> seen;
+  std::vector<GridCell> queue;
+  auto push = [&](GridCell c) {
+    if (c.i < g.nx - 1 && c.j < g.ny - 1 && c.k < g.nz - 1 && seen.insert(point_id(c.i, c.j, c.k)).second)
+      queue.push_back(c);
+  };
+  for (const GridCell& c : seeds) push(c);
+  while ( ! queue.empty())
+  {
+    const GridCell c = queue.back();
+    queue.pop_back();
+    // Corner n: bit 0 is its offset in x, bit 1 in y, bit 2 in z.
+    bool above[8];
+    for (unsigned n = 0; n < 8; ++n)
+      above[n] = value(c.i + (n & 1), c.j + (n >> 1 & 1), c.k + (n >> 2)) >= 0.;
+    if (std::ranges::all_of(above, [&](bool a) { return a == above[0]; })) continue;
+    cells.push_back(c);
+    // Each face of the cube: the corners with bit a equal to side.
+    for (unsigned a = 0; a < 3; ++a)
+      for (unsigned side = 0; side < 2; ++side)
+      {
+        bool any_above = false, any_below = false;
+        for (unsigned n = 0; n < 8; ++n)
+          if ((n >> a & 1) == side) (above[n] ? any_above : any_below) = true;
+        if ( ! (any_above && any_below)) continue;
+        GridCell d = c;
+        unsigned& x = a == 0 ? d.i : a == 1 ? d.j : d.k;
+        if (side == 0 && x == 0) continue;
+        x = side ? x + 1 : x - 1;
+        push(d);
+      }
+  }
+  std::ranges::sort(cells, {}, [](const GridCell& c) { return std::tuple(c.k, c.i, c.j); });
+
+  // The crossings by grid edge: the edge's lower point and kCube's array,
+  // 0 along z, 1 along x, 2 along y; computed as fill_cartesian() does.
+  struct Crossing
+  {
+    bool     exists = false;
+    int      orientation = 0;
+    Vec3     p;
+    VertexId v;
+  };
+  std::unordered_map<std::uint64_t, Crossing> crossings;
+  auto crossing = [&](unsigned a, unsigned i, unsigned j, unsigned k) -> Crossing& {
+    auto [it, made] = crossings.try_emplace(point_id(i, j, k) * 3 + a);
+    if (made)
+    {
+      const double v1 = value(i, j, k);
+      const double v2 = a == 0 ? value(i, j, k + 1) : a == 1 ? value(i + 1, j, k) : value(i, j + 1, k);
+      if (crosses(v1, v2))
+      {
+        const double t = v1 / (v1 - v2);
+        it->second = { true, v2 >= 0. ? 1 : 0,
+                       a == 0 ? grid_point(g, i, j, k + t) : a == 1 ? grid_point(g, i + t, j, k) : grid_point(g, i, j + t, k),
+                       {} };
+      }
+    }
+    return it->second;
+  };
+  for (const GridCell& c : cells)
+    cube_faces(s, [&](unsigned e) -> Crossing& {
+      return crossing(kCube[e][0], c.i + kCube[e][2], c.j + kCube[e][3], c.k + kCube[e][1]);
+    });
 }
 
 void isosurface_tetra(Surface& s, CartesianGrid g, const PlaneFunc& f, double iso)

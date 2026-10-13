@@ -17,10 +17,14 @@ sphere-3            sphere 3
 sphere-4            sphere 4
 sphere-5            sphere 5
 
-# Iso-surfaces: 4 algorithms x 3 fields, 40 cells per axis
+# Iso-surfaces: 4 algorithms x 3 fields, 40 cells per axis; seeded is
+# gts-cxx's marching cubes from a seed, and GTS's full marching cubes in C
 iso-cartesian-sphere       iso cartesian sphere 40
 iso-cartesian-torus        iso cartesian torus 40
 iso-cartesian-blobs        iso cartesian blobs 40
+iso-seeded-sphere          iso seeded sphere 40
+iso-seeded-torus           iso seeded torus 40
+iso-seeded-blobs           iso seeded blobs 40
 iso-tetra-sphere           iso tetra sphere 40
 iso-tetra-torus            iso tetra torus 40
 iso-tetra-blobs            iso tetra blobs 40

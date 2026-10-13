@@ -5,8 +5,8 @@
 // predicates, bounding-box trees, booleans and the cluster grid; distances,
 // the inside test, curvature, the kd-tree and merging; neighbourhoods,
 // Delaunay triangulation, matrices, box overlaps, the writers, strips,
-// parked elements, progressive and hierarchical surfaces, graphs and the
-// iso-surface slices.
+// parked elements, progressive and hierarchical surfaces, graphs, the
+// iso-surface slices and marching cubes from seeds.
 //
 // Copyright (C) 2026 Matevz Tadel
 // SPDX-License-Identifier: LGPL-2.1-or-later
@@ -1513,6 +1513,86 @@ static void test_isoslice()
   CHECK(s1.face_number() == s2.face_number() && std::abs(area(s1) - area(s2)) < 1e-12 && is_closed(s2));
 }
 
+// Whether two surfaces have the same faces, in the same order, through the
+// same vertices.
+static bool same_faces(const Surface& a, const Surface& b)
+{
+  if (a.face_number() != b.face_number()) return false;
+  std::vector<std::array<Vec3, 3>> fa, fb;
+  for (auto [s, out] : { std::pair(&a, &fa), std::pair(&b, &fb) })
+    for (FaceId f : s->faces())
+    {
+      const auto ve = s->geometrium().vertices_edges(f);
+      out->push_back({ s->geometrium().vertex(ve.v[0]).p, s->geometrium().vertex(ve.v[1]).p,
+                       s->geometrium().vertex(ve.v[2]).p });
+    }
+  return std::ranges::equal(fa, fb, [](const auto& x, const auto& y) {
+    return std::ranges::equal(x, y, [](Vec3 p, Vec3 q) { return p.x == q.x && p.y == q.y && p.z == q.z; });
+  });
+}
+
+static void test_iso_seeded()
+{
+  const unsigned n = 40;
+  const CartesianGrid cg{ n + 1, n + 1, n + 1, -1.25, 2.5 / n, -1.25, 2.5 / n, -1.25, 2.5 / n };
+  unsigned evaluations = 0;
+  auto sphere = [&](Vec3 p) { ++evaluations; return p.x * p.x + p.y * p.y + p.z * p.z; };
+
+  // One part: the same faces as the full method, from a seed found by
+  // bisection, with far fewer evaluations.
+  Geometrium g1, g2;
+  Surface& full = g1.new_surface();
+  isosurface_cartesian(full, cg, sample(sphere), 1.);
+  const unsigned full_evaluations = evaluations;
+  evaluations = 0;
+  Surface& seeded = g2.new_surface();
+  const auto seeds = cells_crossing(cg, sphere, 1., { 0, 0, 0 }, { 1.2, 0.1, 0.05 });
+  CHECK( ! seeds.empty());
+  isosurface_cartesian(seeded, cg, sphere, 1., seeds);
+  CHECK(same_faces(full, seeded) && full.vertex_number() == seeded.vertex_number() && full.edge_number() == seeded.edge_number());
+  CHECK(is_closed(seeded) && is_orientable(seeded));
+  CHECK(evaluations < full_evaluations / 4);
+
+  // The surface of a previous step as the seed, with a band of one cell.
+  Geometrium g3, g4;
+  Surface& bigger = g3.new_surface();
+  isosurface_cartesian(bigger, cg, sample(sphere), 1.1);
+  Surface& tracked = g4.new_surface();
+  isosurface_cartesian(tracked, cg, sphere, 1.1, cells_near(cg, seeded, 1));
+  CHECK(same_faces(bigger, tracked));
+
+  // Seeds the surface does not cross, or none.
+  Geometrium g5;
+  Surface& empty = g5.new_surface();
+  CHECK(cells_crossing(cg, sphere, 1., { 0, 0, 0 }, { 0.5, 0, 0 }).empty());
+  const std::array<Vec3, 1> centre{};
+  isosurface_cartesian(empty, cg, sphere, 1., cells_near(cg, centre));
+  isosurface_cartesian(empty, cg, sphere, 1., {});
+  CHECK(empty.face_number() == 0 && empty.vertex_number() == 0);
+  CHECK(cells_near(cg, std::array{ Vec3{ 5, 0, 0 } }).empty());
+  CHECK(cells_near(cg, std::array{ Vec3{ 1.3, 1.25, -1.25 } }, 1).size() == 2);
+
+  // Two parts: a seed on one makes that part only; seeds on both make what
+  // the full method makes.
+  auto blobs = [](Vec3 p) {
+    auto b = [](Vec3 d) { return 1. / (d.x * d.x + d.y * d.y + d.z * d.z + 1e-12); };
+    return b(p - Vec3{ 0.6, 0, 0 }) + b(p - Vec3{ -0.6, 0.1, 0 });
+  };
+  Geometrium g6, g7, g8;
+  Surface& both_full = g6.new_surface();
+  isosurface_cartesian(both_full, cg, sample(blobs), 16.);
+  Surface& one = g7.new_surface();
+  const auto right = cells_crossing(cg, blobs, 16., { 0.6, 0, 0 }, { 1.2, 0, 0 });
+  isosurface_cartesian(one, cg, blobs, 16., right);
+  CHECK(is_closed(one) && one.face_number() > 0 && one.face_number() < both_full.face_number());
+  CHECK(std::ranges::all_of(one.vertices(), [&](VertexId v) { return g7.vertex(v).p.x > 0.; }));
+  auto seeds2 = cells_crossing(cg, blobs, 16., { -0.6, 0.1, 0 }, { -1.2, 0.1, 0 });
+  seeds2.insert(seeds2.end(), right.begin(), right.end());
+  Surface& both = g8.new_surface();
+  isosurface_cartesian(both, cg, blobs, 16., seeds2);
+  CHECK(same_faces(both_full, both));
+}
+
 int main()
 {
   std::println("sizeof Vertex {}, Edge {}, Face {}", sizeof(Vertex), sizeof(Edge), sizeof(Face));
@@ -1553,6 +1633,7 @@ int main()
   test_progressive();
   test_graph();
   test_isoslice();
+  test_iso_seeded();
   std::println("{}", g_failed ? "FAILED" : "all passed");
   return g_failed != 0;
 }

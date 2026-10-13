@@ -212,9 +212,10 @@ void iso_cmd(Surface& s, std::span<char*> a)
   const std::string_view algo = a[0], func = a[1];
   double (*f)(Vec3);
   double iso;
-  if      (func == "sphere") { f = field_sphere; iso = 1;    }
-  else if (func == "torus")  { f = field_torus;  iso = 0.09; }
-  else if (func == "blobs")  { f = field_blobs;  iso = 4;    }
+  Vec3 inside; // across the surface from (1.2, 0.1, 0.05), for seeded
+  if      (func == "sphere") { f = field_sphere; iso = 1;    inside = { 0, 0, 0 };   }
+  else if (func == "torus")  { f = field_torus;  iso = 0.09; inside = { 0.7, 0, 0 }; }
+  else if (func == "blobs")  { f = field_blobs;  iso = 4;    inside = { 0.4, 0, 0 }; }
   else fail("FUNC must be sphere, torus or blobs");
 
   const unsigned n = unsigned(std::strtoul(a[2], nullptr, 10));
@@ -222,10 +223,11 @@ void iso_cmd(Surface& s, std::span<char*> a)
   const CartesianGrid g = { n + 1, n + 1, n + 1, lo, d, lo, d, lo, d };
   const PlaneFunc pf = sample(f);
   if      (algo == "cartesian")     isosurface_cartesian    (s, g, pf, iso);
+  else if (algo == "seeded")        isosurface_cartesian    (s, g, f, iso, cells_crossing(g, f, iso, inside, { 1.2, 0.1, 0.05 }));
   else if (algo == "tetra")         isosurface_tetra        (s, g, pf, iso);
   else if (algo == "tetra_bounded") isosurface_tetra_bounded(s, g, pf, iso);
   else if (algo == "tetra_bcl")     isosurface_tetra_bcl    (s, g, pf, iso);
-  else fail("ALGO must be cartesian, tetra, tetra_bounded or tetra_bcl");
+  else fail("ALGO must be cartesian, seeded, tetra, tetra_bounded or tetra_bcl");
 }
 
 // isoslice FUNC N, as gts-ref.

@@ -297,11 +297,14 @@ GtsSurface* make_iso(std::string_view algo, std::string_view func, guint n)
   GtsCartesianGrid g = { n + 1, n + 1, n + 1, lo, d, lo, d, lo, d };
 
   GtsSurface* s = new_surface();
-  if      (algo == "cartesian")     gts_isosurface_cartesian    (s, g, field_to_plane, (gpointer) f, iso);
+  // seeded: gts-cxx's marching cubes from seeds, which on these fields of
+  // one part make what the full method makes.
+  if      (algo == "cartesian" || algo == "seeded")
+                                    gts_isosurface_cartesian    (s, g, field_to_plane, (gpointer) f, iso);
   else if (algo == "tetra")         gts_isosurface_tetra        (s, g, field_to_plane, (gpointer) f, iso);
   else if (algo == "tetra_bounded") gts_isosurface_tetra_bounded(s, g, field_to_plane, (gpointer) f, iso);
   else if (algo == "tetra_bcl")     gts_isosurface_tetra_bcl    (s, g, field_to_plane, (gpointer) f, iso);
-  else fail("ALGO must be cartesian, tetra, tetra_bounded or tetra_bcl");
+  else fail("ALGO must be cartesian, seeded, tetra, tetra_bounded or tetra_bcl");
   return s;
 }
 
@@ -1034,7 +1037,7 @@ void usage()
     "  hsurface   IN MIN_EDGES N           hierarchical surface: N expansions, N/2 collapses\n"
     "  graph      IN stats|bubble NP NITER|bisect ggg|bfgg NTRY [kl|bkl MMAX]|recursive N|pgraph MIN|io\n"
     "  jostle     GRAPH N          a graph in the Jostle format, in 2^N parts\n"
-    "               ALGO: cartesian | tetra | tetra_bounded | tetra_bcl\n"
+    "               ALGO: cartesian | seeded | tetra | tetra_bounded | tetra_bcl\n"
     "               FUNC: sphere | torus | blobs, on [-1.25, 1.25]^3 with N cells per axis\n"
     "  bool       OP A B           OP: union | inter | diff\n"
     "  cluster    IN DELTA\n"
