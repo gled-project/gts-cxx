@@ -52,6 +52,42 @@ void print_range(const char* name, const Range& r)
   std::println("{} n={} min={:.12e} mean={:.12e} max={:.12e}", name, r.n, r.min, r.mean, r.max);
 }
 
+// A dot file of a graph: its nodes and edges, and the range of the degrees
+// of its nodes, numbered "nK" from 1.
+void print_dot(std::string_view key, const std::string& dot)
+{
+  std::vector<unsigned> degree;
+  std::size_t edges = 0;
+  for (std::size_t b = 0, e; b < dot.size(); b = e + 1)
+  {
+    e = dot.find('\n', b);
+    if (e == std::string::npos) e = dot.size();
+    const std::string_view line(dot.data() + b, e - b);
+    if ( ! line.starts_with("  n")) continue;
+    const unsigned n1 = unsigned(std::strtoul(line.data() + 3, nullptr, 10));
+    const std::size_t arrow = line.find(" -> n");
+    if (arrow == std::string_view::npos)
+    {
+      if (degree.size() <= n1) degree.resize(n1 + 1);
+      continue;
+    }
+    const unsigned n2 = unsigned(std::strtoul(line.data() + arrow + 5, nullptr, 10));
+    if (degree.size() <= std::max(n1, n2)) degree.resize(std::max(n1, n2) + 1);
+    ++degree[n1];
+    ++degree[n2];
+    ++edges;
+  }
+  unsigned dmin = degree.size() > 1 ? ~0u : 0, dmax = 0, sum = 0;
+  for (std::size_t i = 1; i < degree.size(); ++i)
+  {
+    dmin = std::min(dmin, degree[i]);
+    dmax = std::max(dmax, degree[i]);
+    sum += degree[i];
+  }
+  std::println("{}_dot nodes={} edges={} degree_min={} degree_max={} degree_sum={} closed={}", key,
+               degree.empty() ? 0 : degree.size() - 1, edges, dmin, dmax, sum, dot.ends_with("}\n") ? 1 : 0);
+}
+
 void print_summary(const Surface& s)
 {
   const Geometrium& g = s.geometrium();
@@ -739,13 +775,33 @@ void hsurface_cmd(Surface& s, std::size_t min_edges, unsigned n)
 // Graphs and partitions, as gts-ref
 //==============================================================================
 
-void graph_stats(const NodeSet& g)
+void graph_stats(const NodeSet& g, std::string_view key = "graph")
 {
   Range degree;
   for (GNodeId n : g.nodes()) degree.add(gts::degree(g.graph(), n, &g));
   degree.update();
-  std::println("graph nodes={} edges={} weight={:.6e}", g.size(), edges_of(g).size(), g.weight());
-  print_range("graph_degree", degree);
+  std::println("{} nodes={} edges={} weight={:.6e}", key, g.size(), edges_of(g).size(), g.weight());
+  print_range(std::format("{}_degree", key).c_str(), degree);
+}
+
+// The lines of text, each as "key_N line".
+void print_lines(std::string_view key, const std::string& text)
+{
+  std::istringstream in(text);
+  int i = 0;
+  for (std::string line; std::getline(in, line); ) std::println("{}_{} {}", key, ++i, line);
+}
+
+// The text of print_stats(), and the nodes, edges and degrees of the dot
+// file, whose labels and order differ from GTS's.
+void graph_print(const NodeSet& g, std::string_view key)
+{
+  std::ostringstream out;
+  print_stats(g, out);
+  print_lines(key, out.str());
+  std::ostringstream dot;
+  write_dot(g, dot);
+  print_dot(key, dot.str());
 }
 
 void partition_stats(const NodeSet& g, std::span<const NodeSet> parts)
@@ -767,6 +823,16 @@ void partition_stats(const NodeSet& g, std::span<const NodeSet> parts)
   std::println("parts_cut {}", partition_edges_cut(parts));
   std::println("parts_balance {:.6e}", partition_balance(parts));
   print_range("parts_size", size);
+  std::println("parts_cut_weight {:.6e}", partition_edges_cut_weight(parts));
+  Range cut, cut_weight;
+  for (const NodeSet& p : parts) { cut.add(edges_cut(p)); cut_weight.add(edges_cut_weight(p)); }
+  cut.update();
+  cut_weight.update();
+  print_range("parts_edges_cut", cut);
+  print_range("parts_edges_cut_weight", cut_weight);
+  std::ostringstream out;
+  print_partition_stats(parts, out);
+  print_lines("parts_print", out.str());
 }
 
 void graph_cmd(const Surface& s, std::span<char*> a)
@@ -804,9 +870,28 @@ void graph_cmd(const Surface& s, std::span<char*> a)
   {
     PGraph pg(gr, g, std::strtoul(a[1], nullptr, 10));
     std::println("pgraph min={} max={} levels={}", pg.min_node_number(), pg.max_node_number(), pg.levels());
-    graph_stats(g);
+    graph_stats(g, "pgraph_coarse");
     pg.set_node_number(pg.max_node_number());
-    graph_stats(g);
+    graph_stats(g, "pgraph_fine");
+    // Half the splits collapsed one by one, then expanded again.
+    const std::size_t half = (pg.min_node_number() + pg.max_node_number()) / 2;
+    unsigned n = 0;
+    while (pg.node_number() > half && pg.remove_node()) ++n;
+    std::println("pgraph_removed {} number={}", n, pg.node_number());
+    graph_stats(g, "pgraph_half");
+    n = 0;
+    while (pg.add_node()) ++n;
+    std::println("pgraph_added {} number={}", n, pg.node_number());
+    graph_stats(g, "pgraph_back");
+  }
+  else if (what == "segments")
+  {
+    Graph sgr;
+    std::vector<EdgeId> edges;
+    for (EdgeId e : s.edges()) edges.push_back(e);
+    NodeSet sg = segments_graph(sgr, s.geometrium(), edges);
+    graph_stats(sg, "segments");
+    graph_print(sg, "segments_print");
   }
   else if (what == "io")
   {
@@ -817,8 +902,10 @@ void graph_cmd(const Surface& s, std::span<char*> a)
     if ( ! g1) fail(std::format("cannot read the graph back: {}:{}: {}", g1.error().line, g1.error().pos, g1.error().message));
     graph_stats(*g1);
   }
-  else if (what != "stats")
-    fail("graph: WHAT must be stats, bubble, bisect, recursive, pgraph or io");
+  else if (what == "stats")
+    graph_print(g, "graph_print");
+  else
+    fail("graph: WHAT must be stats, bubble, bisect, recursive, pgraph, segments or io");
 }
 
 } // namespace

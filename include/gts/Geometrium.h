@@ -399,8 +399,8 @@ public:
   void set_face_edges(FaceId f, EdgeId a, EdgeId b, EdgeId c);
 
   // Unlinks from the rings and marks dead. kill_face() leaves the edges
-  // linked; kill_edge() requires an edge without faces, and kill_vertex()
-  // a vertex without edges.
+  // linked and requires a face in no surface; kill_edge() requires an edge
+  // without faces, and kill_vertex() a vertex without edges.
   void kill_face(FaceId f);
   void kill_edge(EdgeId e);
   void kill_vertex(VertexId v);

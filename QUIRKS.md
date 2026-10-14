@@ -362,7 +362,8 @@ None open.
   `test/compare/ties.txt`). Weights are floats, as in GTS.
 - `write_graph()` writes the edges between nodes of the set. GTS's
   `gts_graph_write` wrote every edge of the set's nodes, numbering a node
-  outside the set 0.
+  outside the set 0. `write_dot()` does the same, and labels nodes and
+  edges with their data, where GTS wrote pointers.
 - The Geomview writers take colours from `OoglColors`, where GTS asked the
   classes of the vertices, faces and edges, and number vertices in index
   order, as `write_gts()` does.

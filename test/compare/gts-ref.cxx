@@ -90,6 +90,42 @@ void print_range(const char* name, const GtsRange& r)
   std::println("{} n={} min={:.12e} mean={:.12e} max={:.12e}", name, r.n, r.min, r.mean, r.max);
 }
 
+// A dot file of a graph: its nodes and edges, and the range of the degrees
+// of its nodes, numbered "nK" from 1.
+void print_dot(std::string_view key, const std::string& dot)
+{
+  std::vector<unsigned> degree;
+  std::size_t edges = 0;
+  for (std::size_t b = 0, e; b < dot.size(); b = e + 1)
+  {
+    e = dot.find('\n', b);
+    if (e == std::string::npos) e = dot.size();
+    const std::string_view line(dot.data() + b, e - b);
+    if ( ! line.starts_with("  n")) continue;
+    const unsigned n1 = unsigned(std::strtoul(line.data() + 3, nullptr, 10));
+    const std::size_t arrow = line.find(" -> n");
+    if (arrow == std::string_view::npos)
+    {
+      if (degree.size() <= n1) degree.resize(n1 + 1);
+      continue;
+    }
+    const unsigned n2 = unsigned(std::strtoul(line.data() + arrow + 5, nullptr, 10));
+    if (degree.size() <= std::max(n1, n2)) degree.resize(std::max(n1, n2) + 1);
+    ++degree[n1];
+    ++degree[n2];
+    ++edges;
+  }
+  unsigned dmin = degree.size() > 1 ? ~0u : 0, dmax = 0, sum = 0;
+  for (std::size_t i = 1; i < degree.size(); ++i)
+  {
+    dmin = std::min(dmin, degree[i]);
+    dmax = std::max(dmax, degree[i]);
+    sum += degree[i];
+  }
+  std::println("{}_dot nodes={} edges={} degree_min={} degree_max={} degree_sum={} closed={}", key,
+               degree.empty() ? 0 : degree.size() - 1, edges, dmin, dmax, sum, dot.ends_with("}\n") ? 1 : 0);
+}
+
 void bbox_vertex(GtsVertex* v, double* b)
 {
   const GtsPoint& p = v->p;
@@ -911,7 +947,7 @@ void count_gedge(GtsGEdge*, guint* n) { ++*n; }
 struct DegreeArg { GtsGraph* g; GtsRange* r; };
 void add_degree(GtsGNode* n, DegreeArg* a) { gts_range_add_value(a->r, gts_gnode_degree(n, a->g)); }
 
-void graph_stats(GtsGraph* g)
+void graph_stats(GtsGraph* g, std::string_view key = "graph")
 {
   guint ne = 0;
   gts_graph_foreach_edge(g, (GtsFunc) count_gedge, &ne);
@@ -920,8 +956,42 @@ void graph_stats(GtsGraph* g)
   DegreeArg a{ g, &degree };
   gts_container_foreach(GTS_CONTAINER(g), (GtsFunc) add_degree, &a);
   gts_range_update(&degree);
-  std::println("graph nodes={} edges={} weight={:.6e}", gts_container_size(GTS_CONTAINER(g)), ne, gts_graph_weight(g));
-  print_range("graph_degree", degree);
+  std::println("{} nodes={} edges={} weight={:.6e}", key, gts_container_size(GTS_CONTAINER(g)), ne, gts_graph_weight(g));
+  print_range(std::format("{}_degree", key).c_str(), degree);
+}
+
+// What a writer to a FILE wrote.
+template <typename F>
+std::string written(F f)
+{
+  char* buf = nullptr;
+  std::size_t size = 0;
+  FILE* fp = open_memstream(&buf, &size);
+  f(fp);
+  std::fclose(fp);
+  std::string text(buf, size);
+  std::free(buf);
+  return text;
+}
+
+// The lines of text, each as "key_N line".
+void print_lines(std::string_view key, const std::string& text)
+{
+  int i = 0;
+  for (std::size_t b = 0, e; b < text.size(); b = e + 1)
+  {
+    e = text.find('\n', b);
+    if (e == std::string::npos) e = text.size();
+    std::println("{}_{} {}", key, ++i, std::string_view(text.data() + b, e - b));
+  }
+}
+
+// The text of gts_graph_print_stats, and the nodes, edges and degrees of
+// the dot file, whose labels hold pointers.
+void graph_print(GtsGraph* g, std::string_view key)
+{
+  print_lines(key, written([g](FILE* fp) { gts_graph_print_stats(g, fp); }));
+  print_dot(key, written([g](FILE* fp) { gts_graph_write_dot(g, fp); }));
 }
 
 // The parts: their number, the nodes in all, whether each node of g is in
@@ -955,10 +1025,24 @@ void partition_stats(GtsGraph* g, GSList* parts)
   std::println("parts_cut {}", gts_graph_partition_edges_cut(parts));
   std::println("parts_balance {:.6e}", gts_graph_partition_balance(parts));
   print_range("parts_size", size);
+  std::println("parts_cut_weight {:.6e}", gts_graph_partition_edges_cut_weight(parts));
+  GtsRange cut, cut_weight;
+  gts_range_init(&cut);
+  gts_range_init(&cut_weight);
+  for (GSList* i = parts; i; i = i->next)
+  {
+    gts_range_add_value(&cut, gts_graph_edges_cut(GTS_GRAPH(i->data)));
+    gts_range_add_value(&cut_weight, gts_graph_edges_cut_weight(GTS_GRAPH(i->data)));
+  }
+  gts_range_update(&cut);
+  gts_range_update(&cut_weight);
+  print_range("parts_edges_cut", cut);
+  print_range("parts_edges_cut_weight", cut_weight);
+  print_lines("parts_print", written([parts](FILE* fp) { gts_graph_partition_print_stats(parts, fp); }));
 }
 
 // graph IN WHAT ARGS...: the dual graph of IN, and
-//   stats | bubble NP NITER | bisect ggg|bfgg NTRY [kl|bkl MMAX] | recursive N | pgraph MIN
+//   stats | bubble NP NITER | bisect ggg|bfgg NTRY [kl|bkl MMAX] | recursive N | pgraph MIN | segments
 void graph_cmd(GtsSurface* s, std::span<char*> a)
 {
   GtsGraph* g = gts_surface_graph_new(GTS_GRAPH_CLASS(gts_wgraph_class()), s);
@@ -996,9 +1080,28 @@ void graph_cmd(GtsSurface* s, std::span<char*> a)
                                    gts_wgedge_class(), std::strtoul(a[1], nullptr, 10));
     std::println("pgraph min={} max={} levels={}", gts_pgraph_min_node_number(pg), gts_pgraph_max_node_number(pg),
                  pg->levels->len);
-    graph_stats(g);
+    graph_stats(g, "pgraph_coarse");
     gts_pgraph_set_node_number(pg, gts_pgraph_max_node_number(pg));
-    graph_stats(g);
+    graph_stats(g, "pgraph_fine");
+    // Half the splits collapsed one by one, then expanded again.
+    const guint half = (gts_pgraph_min_node_number(pg) + gts_pgraph_max_node_number(pg)) / 2;
+    guint n = 0;
+    while (gts_pgraph_get_node_number(pg) > half && gts_pgraph_remove_node(pg)) ++n;
+    std::println("pgraph_removed {} number={}", n, gts_pgraph_get_node_number(pg));
+    graph_stats(g, "pgraph_half");
+    n = 0;
+    while (gts_pgraph_add_node(pg)) ++n;
+    std::println("pgraph_added {} number={}", n, gts_pgraph_get_node_number(pg));
+    graph_stats(g, "pgraph_back");
+  }
+  else if (what == "segments")
+  {
+    GSList* edges = nullptr;
+    gts_surface_foreach_edge(s, (GtsFunc) prepend, &edges);
+    edges = g_slist_reverse(edges);
+    GtsGraph* sg = gts_segments_graph_new(gts_graph_class(), edges);
+    graph_stats(sg, "segments");
+    graph_print(sg, "segments_print");
   }
   else if (what == "io")
   {
@@ -1013,8 +1116,10 @@ void graph_cmd(GtsSurface* s, std::span<char*> a)
     gts_file_destroy(f);
     std::fclose(fp);
   }
-  else if (what != "stats")
-    fail("graph: WHAT must be stats, bubble, bisect, recursive, pgraph or io");
+  else if (what == "stats")
+    graph_print(g, "graph_print");
+  else
+    fail("graph: WHAT must be stats, bubble, bisect, recursive, pgraph, segments or io");
 }
 
 //==============================================================================
@@ -1336,7 +1441,7 @@ void usage()
     "  psurface-write IN MIN_EDGES OUT     writes the progressive surface\n"
     "  psurface-read  PSURF LEVEL...       reads one\n"
     "  hsurface   IN MIN_EDGES N           hierarchical surface: N expansions, N/2 collapses\n"
-    "  graph      IN stats|bubble NP NITER|bisect ggg|bfgg NTRY [kl|bkl MMAX]|recursive N|pgraph MIN|io\n"
+    "  graph      IN stats|bubble NP NITER|bisect ggg|bfgg NTRY [kl|bkl MMAX]|recursive N|pgraph MIN|segments|io\n"
     "  jostle     GRAPH N          a graph in the Jostle format, in 2^N parts\n"
     "  bool       OP A B           OP: union | inter | diff\n"
     "  cluster    IN DELTA\n"

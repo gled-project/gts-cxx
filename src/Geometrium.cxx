@@ -247,6 +247,8 @@ void Geometrium::revert_face(FaceId f)
 
 void Geometrium::kill_face(FaceId f)
 {
+  if (m_faces[f.i].surfaces != 0)
+    throw std::logic_error("gts::Geometrium::kill_face: the face is in a surface");
   for (int k = 0; k < 3; ++k) unlink_face_slot(f, k);
   m_faces[f.i].flags |= kDead;
 }

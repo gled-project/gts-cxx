@@ -1902,6 +1902,19 @@ static void test_robustness()
     catch (const std::exception&) { ok = false; }
     CHECK(ok && s.face_number() == nf && s.vertex_number() == nv);
   }
+  // kill_face() refuses a face in a surface, which would stay there dead.
+  {
+    Geometrium g;
+    Surface& s = g.new_surface();
+    generate_sphere(s, 1);
+    const FaceId f = *s.faces().begin();
+    bool threw = false;
+    try { g.kill_face(f); }
+    catch (const std::logic_error&) { threw = true; }
+    CHECK(threw && ! g.dead(f) && s.faces().contains(f));
+    s.remove_face(f);
+    CHECK(g.dead(f));
+  }
   // A split whose flags do not fit the surface is a ReadError, and g is
   // left as it was.
   {

@@ -63,12 +63,13 @@ psurface-sphere4-100                    1e-12  psurface
 
 # Partitions start from the nodes of smallest degree, and grow, refine and
 # match in the order of GTS's hash tables. The parts differ; both must cover
-# every node once. The progressive graph must have as many levels, and
-# expand back to the same graph. There are no surfaces to compare.
+# every node once. The progressive graph must have as many levels, expand
+# back to the same graph, and collapse and expand again node by node.
+# There are no surfaces to compare.
 graph-horse5-bubble-8                   0      parts parts_nodes parts_cover
 graph-horse5-ggg                        0      parts parts_nodes parts_cover bisection_check
 graph-horse5-bfgg-kl                    0      parts parts_nodes parts_cover bisection_check
 graph-horse5-ggg-bkl                    0      parts parts_nodes parts_cover bisection_check
 graph-horse5-recursive-3                0      parts parts_nodes parts_cover
 graph-sphere4-recursive-2               0      parts parts_nodes parts_cover
-graph-horse5-pgraph-100                 0      pgraph graph graph_degree
+graph-horse5-pgraph-100                 0      pgraph graph graph_degree pgraph_fine pgraph_fine_degree pgraph_removed pgraph_added pgraph_back pgraph_back_degree

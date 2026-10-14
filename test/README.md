@@ -21,9 +21,9 @@ with `compare.py`: integers exactly, floating-point values to a relative
 tolerance (default 1e-9). It then reads every surface the C++ library wrote
 back through the C library, to check the writer.
 
-All 323 cases run through both libraries: the 240 of the port of what
+All 325 cases run through both libraries: the 240 of the port of what
 Gled calls, 21 for the distances, the inside test, curvature, merging and
-the centres, 46 for what was ported after: Delaunay triangulation, the
+the centres, 48 for what was ported after: Delaunay triangulation, the
 iso-surface slices, triangle strips, progressive and hierarchical surfaces,
 and graphs; 3 for marching cubes from a seed, which gts-cxx adds and which
 the C side runs as GTS's full marching cubes; 10 for height fields, which
@@ -33,7 +33,7 @@ per vertex or sample point, keyed by its coordinates, and read surfaces the
 C library wrote (`@REF@` in `cases.txt`), so that both programs measure the
 same input. The summaries include whether the surface intersects itself.
 How GTS breaks ties changes with the build of `gts-ref`, which moves cases
-between the categories below. On 2026-10-13:
+between the categories below. On 2026-10-14:
 
 - 195 cases agree with the C library in every value to 1e-9, and so do
   the surfaces written by the C++ library when read by the C one.
@@ -48,12 +48,13 @@ between the categories below. On 2026-10-13:
   torus, only vertices where gts-cxx gives no Gaussian curvature may
   differ; the hierarchical surfaces, which crash GTS, and the graph and the
   progressive surface GTS cannot read back must succeed.
-- 19 are in `test/compare/ties.txt` and differ: GTS chooses between equal
+- 21 are in `test/compare/ties.txt` and differ: GTS chooses between equal
   costs or candidates in the order of its hash tables, which follows
   memory addresses. `compare.sh` checks instead that the two surfaces lie
   within a tenth of the mean edge length of each other, and `compare.py`
   that the lines listed with the case agree: for strips and partitions,
-  that every face or node is taken once.
+  that every face or node is taken once, and that the progressive graph
+  expands back to the same graph.
 - 85 are degenerate booleans, and 4 crash in the C library: three
   booleans, and the refinement of `crossing.gts`, which does not end (see
   `QUIRKS.md`), where gts-cxx reports the error. See below.

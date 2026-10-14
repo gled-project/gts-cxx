@@ -157,6 +157,8 @@ graph-horse5-recursive-3            graph @DATA@/gts-boolean/horse5.gts recursiv
 graph-sphere4-recursive-2           graph @REF@/sphere-4.gts recursive 2
 graph-horse5-pgraph-100             graph @DATA@/gts-boolean/horse5.gts pgraph 100
 graph-horse5-io                     graph @DATA@/gts-boolean/horse5.gts io
+graph-horse5-segments               graph @DATA@/gts-boolean/horse5.gts segments
+graph-delaunay-segments             graph @REF@/delaunay-random-2000.gts segments
 
 # Height fields, as GTS's example happrox.c: a grid of heights from a PGM
 # file, or scattered points (.xyz, as happrox -f), approximated by greedy
