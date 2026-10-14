@@ -345,7 +345,8 @@ public:
 
   // gts_edge_collapse_is_valid: whether collapsing e keeps the surface's
   // topology, by the constraints of Hoppe et al., "Mesh Optimization"
-  // (1993). Edges with a duplicate are not collapsible.
+  // (1993). Edges with a duplicate are not collapsible, nor, unlike in GTS,
+  // edges with an end where sets of faces meet only at that vertex.
   bool collapsible(EdgeId e) const;
   // gts_edge_collapse_creates_fold: whether collapsing e to a vertex at p
   // would make two neighbouring faces meet at an angle whose cosine squared

@@ -206,6 +206,14 @@ None open.
   three edges that do not form a triangle. GTS accepted both and failed
   later. An edge that has a duplicate is not collapsible, as in GTS, so
   coarsening never makes such an edge.
+- `Geometrium::collapsible()` refuses an edge with an end where sets of
+  faces meet only at that vertex, a contact vertex. GTS collapsed it: the
+  collapse could join two points of the other set, which Hoppe's
+  conditions do not see away from a manifold, and a vertex split could not
+  be expanded again, as it does not record which set each face was in;
+  GTS failed an assertion there. Coarsening keeps such vertices, and the
+  progressive and hierarchical surfaces keep them at the coarsest level.
+- `HSurface::traverse()` with depth 0 visits the roots; GTS refused depth 0.
 - `generate_sphere()` throws for order 0, where GTS printed a CRITICAL
   message and left the surface empty.
 - `volume_optimized_vertex()` throws when the constraints do not fix the

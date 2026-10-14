@@ -8,6 +8,7 @@
 
 #include "gts/Geometrium.h"
 
+#include <algorithm>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -43,6 +44,25 @@ bool vertex_is_boundary(const Geometrium& g, VertexId v)
   for (EdgeId e : g.edges_of(v))
     if (boundary_face(g, e).valid()) return true;
   return false;
+}
+
+// Whether the faces around v fall into sets that meet only at v, as
+// vertex_contacts() counts them, without changing anything.
+bool is_contact(const Geometrium& g, VertexId v)
+{
+  std::vector<FaceId> faces;
+  for (EdgeId e : g.edges_of(v))
+    for (FaceId t : g.faces_of(e))
+      if (std::ranges::find(faces, t) == faces.end()) faces.push_back(t);
+  if (faces.empty()) return false;
+  // Faces reached from the first across edges on v.
+  std::vector<FaceId> reached{ faces[0] };
+  for (std::size_t i = 0; i < reached.size(); ++i)
+    for (EdgeId e : g.face(reached[i]).e)
+      if (g.edge(e).v[0] == v || g.edge(e).v[1] == v)
+        for (FaceId t : g.faces_of(e))
+          if (std::ranges::find(reached, t) == reached.end()) reached.push_back(t);
+  return reached.size() < faces.size();
 }
 
 // triangle_vertices_edges in edge.c: the edges of t other than e, the one
@@ -114,6 +134,11 @@ bool Geometrium::collapsible(EdgeId e) const
     if (e2.valid() && ! face_uses_edges(*this, e, e1, e2))
       return false;
   }
+
+  // At a contact vertex the collapse may join two points of the other set
+  // of faces, and an expansion cannot tell which set each face was in.
+  if (is_contact(*this, v1) || is_contact(*this, v2))
+    return false;
 
   if (const FaceId t = boundary_face(*this, e); t.valid())
   {

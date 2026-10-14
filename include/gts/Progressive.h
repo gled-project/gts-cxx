@@ -9,7 +9,9 @@
 // their indices and attributes, and come back unchanged. The edges a split
 // removes and makes are new each time, as in GTS, with default attributes.
 // The surface must not change except through its PSurface or HSurface;
-// collect() may be called, and the splits follow the renumbering.
+// collect() may be called, and the splits follow the renumbering. Its faces
+// should be in no other surface: a collapse takes a face out of every
+// surface, and an expansion puts it back into this one only.
 //
 // Copyright (C) 1999 Stéphane Popinet (GTS: split.c, psurface.c, hsurface.c)
 // Copyright (C) 2026 Matevz Tadel
@@ -84,7 +86,8 @@ public:
 
   // gts_psurface_open, gts_psurface_read_vertex and gts_psurface_close: a
   // progressive surface written by write(), or by GTS, read into a new
-  // surface of g at its finest level.
+  // surface of g at its finest level. A split that does not fit the surface
+  // is a ReadError. On error, g is left as it was.
   static std::expected<std::unique_ptr<PSurface>, ReadError> read(Geometrium& g, std::istream& in);
 
   Surface&       surface()       { return *m_s; }
@@ -169,8 +172,8 @@ public:
   bool collapse(int i);
 
   // gts_hsurface_traverse: calls f with each split from the roots, before
-  // (pre_order) or after its children, down to depth (all for -1), until f
-  // returns true.
+  // (pre_order) or after its children, down to depth (all for -1; the
+  // roots only for 0, which GTS refused), until f returns true.
   void traverse(bool pre_order, int depth, const std::function<bool(int)>& f) const;
   // gts_hsurface_foreach: expands all splits, then collapses them in their
   // order, calling f before (pre_order) or after each collapse, until f

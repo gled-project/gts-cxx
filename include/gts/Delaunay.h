@@ -86,8 +86,9 @@ void delaunay_remove_vertex(Surface& s, VertexId v);
 // gts_delaunay_add_constraint: makes c, an edge between two vertices of s,
 // a constraint and an edge of s, removing the edges it crosses and
 // triangulating the two sides; where an edge of s joins the two vertices
-// already, c takes its place. Returns the constraints that crossed c,
-// which are no longer edges of s.
+// already, c takes its place and that edge is removed, also when it was a
+// constraint itself. Returns the constraints that crossed c, which are no
+// longer edges of s.
 std::vector<EdgeId> delaunay_add_constraint(Surface& s, EdgeId c);
 // gts_delaunay_check: a face of s whose circumcircle has a neighbouring
 // vertex inside, or an invalid index when s is Delaunay. Constraints are

@@ -1880,6 +1880,71 @@ static void test_face_points_random()
 // Cases from the reviews of 2026-10-13, each of which failed before.
 static void test_robustness()
 {
+  // An edge at a contact vertex, where two sets of faces meet only at that
+  // vertex, is not collapsible; a progressive surface keeps the vertex and
+  // expands back to the input.
+  {
+    Geometrium g;
+    Surface& s = g.new_surface();
+    std::array<VertexId, 6> v;
+    for (int i = 0; i < 6; ++i) v[i] = g.add_vertex({ double(i % 3), double(i / 3), double(i % 2) });
+    auto edge = [&](int i, int j) { const EdgeId e = g.find_edge(v[i], v[j]); return e.valid() ? e : g.add_edge(v[i], v[j]); };
+    for (const char* t : { "514", "124", "032" })
+    {
+      const int i = t[0] - '0', j = t[1] - '0', k = t[2] - '0';
+      s.add_face(g.add_face(edge(i, j), edge(j, k), edge(k, i)));
+    }
+    CHECK( ! g.collapsible(g.find_edge(v[2], v[4])));
+    const std::size_t nf = s.face_number(), nv = s.vertex_number();
+    PSurface ps(s, stop_below_edges(0));
+    bool ok = true;
+    try { ps.set_vertex_number(ps.max_vertex_number()); }
+    catch (const std::exception&) { ok = false; }
+    CHECK(ok && s.face_number() == nf && s.vertex_number() == nv);
+  }
+  // A split whose flags do not fit the surface is a ReadError, and g is
+  // left as it was.
+  {
+    Geometrium g0;
+    Surface& s0 = g0.new_surface();
+    generate_sphere(s0, 2);
+    PSurface ps(s0, stop_below_edges(0));
+    std::ostringstream out;
+    ps.write(out);
+    std::vector<std::string> lines;
+    {
+      std::istringstream in(out.str());
+      for (std::string l; std::getline(in, l); ) lines.push_back(l);
+    }
+    unsigned nv, ne, nf;
+    std::istringstream(lines[0]) >> nv >> ne >> nf;
+    const std::size_t h = 1 + nv + ne + nf;
+    const std::string t = lines[h + 4].substr(0, lines[h + 4].find(' '));
+    Geometrium g;
+    Surface& other = g.new_surface();
+    tetrahedron(g, other);
+    int failed = 0;
+    bool clean = true;
+    for (unsigned flags = 0; flags < 64; ++flags)
+    {
+      std::vector<std::string> bad = lines;
+      bad[h + 4] = std::format("{} {}", t, flags);
+      std::string text;
+      for (const auto& l : bad) text += l + '\n';
+      std::istringstream in(text);
+      const std::size_t cv = g.vertex_capacity(), ce = g.edge_capacity(), cf = g.face_capacity();
+      const std::size_t ns = g.surface_number();
+      try
+      {
+        if (PSurface::read(g, in)) continue;
+        ++failed;
+        if (g.vertex_capacity() != cv || g.edge_capacity() != ce || g.face_capacity() != cf || g.surface_number() != ns)
+          clean = false;
+      }
+      catch (const std::exception&) { clean = false; }
+    }
+    CHECK(failed > 0 && clean && other.face_number() == 4);
+  }
   // A callout that cancels another subscription during a call: the
   // cancelled one is not called, and its state may be gone.
   {

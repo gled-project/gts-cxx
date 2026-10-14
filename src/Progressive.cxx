@@ -498,6 +498,7 @@ void PSurface::write(std::ostream& out)
 std::expected<std::unique_ptr<PSurface>, ReadError> PSurface::read(Geometrium& g, std::istream& in)
 {
   detail::Tokenizer f(std::string(std::istreambuf_iterator<char>(in), {}));
+  const std::size_t nv0 = g.vertex_capacity(), ne0 = g.edge_capacity(), nf0 = g.face_capacity();
   std::vector<VertexId> vertices;
   std::vector<FaceId> faces;
   auto s = detail::read_gts(g, f, {}, &vertices, &faces);
@@ -565,6 +566,7 @@ std::expected<std::unique_ptr<PSurface>, ReadError> PSurface::read(Geometrium& g
   // gts_psurface_read_vertex, until the end.
   while (ps->m_pos < ns && ! f.failed() && f.type() != detail::Tokenizer::None)
   {
+    const unsigned line = f.line();
     VertexSplit vs;
     const std::size_t iv = read_index(vertices.size(), "vertex index", "vertex");
     if (f.failed()) break;
@@ -618,11 +620,20 @@ std::expected<std::unique_ptr<PSurface>, ReadError> PSurface::read(Geometrium& g
     ps->m_splits.push_back(std::move(vs));
     ++ps->m_pos;
     VertexSplit& added = ps->m_splits.back();
-    expand(g, added, **s);
+    // Data that reads well but does not fit the surface fails here.
+    try { expand(g, added, **s); }
+    catch (const std::logic_error& e) { fail(std::format("the split from line {} cannot be expanded: {}", line, e.what())); break; }
     for (std::size_t k = 0; k < slots.size(); ++k) faces[slots[k]] = added.cfaces[k].f;
   }
   if ( ! f.failed() && ps->m_pos < ns) fail(std::format("only `{}' splits read out of `{}'", ps->m_pos, ns));
-  if (f.failed()) return std::unexpected(f.error());
+  if (f.failed())
+  {
+    // Nothing older refers to what was read, as in read_gts().
+    KeepOrphans keep(g, { .faces = true, .edges = true, .vertices = true });
+    g.remove_surface(**s);
+    g.truncate(nv0, ne0, nf0);
+    return std::unexpected(f.error());
+  }
 
   // gts_psurface_close: the splits read, last first, so that the finest
   // comes first, as after gts_psurface_new.

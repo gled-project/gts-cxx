@@ -5,7 +5,8 @@
 // collect(). Hooks say how a value is made when an algorithm makes an element
 // from others; this takes the place of subclassing the elements. Each type
 // has default hooks, which a specialization of DefaultHooks can change for
-// all attributes of that type, and Hooks can change for one attribute.
+// all attributes of that type, and Hooks can change for one attribute. A
+// hook must not add attributes.
 //
 // Copyright (C) 2026 Matevz Tadel
 // SPDX-License-Identifier: LGPL-2.1-or-later
