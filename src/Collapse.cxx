@@ -9,6 +9,7 @@
 #include "gts/Geometrium.h"
 
 #include <algorithm>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -47,19 +48,67 @@ bool vertex_is_boundary(const Geometrium& g, VertexId v)
 }
 
 // Whether the faces around v fall into sets that meet only at v, as
-// vertex_contacts() counts them, without changing anything.
+// vertex_contacts() counts them, without changing anything. The faces of
+// one set are reached by turning round v across its edges, each with two
+// faces; an edge with more takes a search.
 bool is_contact(const Geometrium& g, VertexId v)
 {
+  auto at_v = [&](EdgeId e) { return g.edge(e).v[0] == v || g.edge(e).v[1] == v; };
+  // Twice the number of faces around v, as each has two edges on v.
+  std::size_t twice = 0;
+  EdgeId start;
+  bool manifold = true;
+  for (EdgeId e : g.edges_of(v))
+  {
+    std::size_t n = 0;
+    for (FaceId t : g.faces_of(e)) { (void) t; ++n; }
+    if (n > 2) manifold = false;
+    if (n > 0 && ! start.valid()) start = e;
+    twice += n;
+  }
+  if ( ! start.valid()) return false;
+
+  if (manifold)
+  {
+    // The other face on e, and the other edge of t on v.
+    auto across = [&](EdgeId e, FaceId t) {
+      for (FaceId x : g.faces_of(e)) if (x != t) return x;
+      return FaceId();
+    };
+    auto other_edge = [&](FaceId t, EdgeId e) {
+      for (EdgeId x : g.face(t).e) if (x != e && at_v(x)) return x;
+      return EdgeId();
+    };
+    // The faces from t on, crossing the edges after e, until back at t0 or
+    // at a boundary; none for a degenerate face.
+    const FaceId t0 = *g.faces_of(start).begin();
+    auto turn = [&](FaceId t, EdgeId e, bool& closed) -> std::optional<std::size_t> {
+      std::size_t n = 0;
+      for (; t.valid() && n <= twice; t = across(e, t))
+      {
+        ++n;
+        if ( ! (e = other_edge(t, e)).valid()) return std::nullopt;
+        if (across(e, t) == t0) { closed = true; break; }
+      }
+      return n;
+    };
+    bool closed = false;
+    if (const auto n1 = turn(t0, start, closed))
+    {
+      std::optional<std::size_t> n2 = 0;
+      if ( ! closed) n2 = turn(across(start, t0), start, closed);
+      if (n2) return 2 * (*n1 + *n2) < twice;
+    }
+  }
+
   std::vector<FaceId> faces;
   for (EdgeId e : g.edges_of(v))
     for (FaceId t : g.faces_of(e))
       if (std::ranges::find(faces, t) == faces.end()) faces.push_back(t);
-  if (faces.empty()) return false;
-  // Faces reached from the first across edges on v.
   std::vector<FaceId> reached{ faces[0] };
   for (std::size_t i = 0; i < reached.size(); ++i)
     for (EdgeId e : g.face(reached[i]).e)
-      if (g.edge(e).v[0] == v || g.edge(e).v[1] == v)
+      if (at_v(e))
         for (FaceId t : g.faces_of(e))
           if (std::ranges::find(reached, t) == reached.end()) reached.push_back(t);
   return reached.size() < faces.size();
