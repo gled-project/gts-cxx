@@ -270,6 +270,9 @@ void Geometrium::replace_edge(EdgeId e, EdgeId with)
 VertexId Geometrium::collapse_edge(EdgeId e, Vec3 p, const std::function<void(EdgeId)>& on_removed_edge)
 {
   const VertexId v1 = m_edges[e.i].v[0], v2 = m_edges[e.i].v[1];
+  // The duplicate would join mid to itself.
+  if (duplicate_of(e).valid())
+    throw std::logic_error("gts::Geometrium::collapse_edge: the edge has a duplicate");
 
   // Destroying e destroys its faces; their other edges stay, even without
   // faces, to be merged below.
@@ -308,7 +311,9 @@ VertexId Geometrium::collapse_edge(EdgeId e, Vec3 p, const std::function<void(Ed
       removed.push_back(e1);
     }
   }
-  // destroy_edge() marks mid dead when it is left without edges.
+  // destroy_edge() marks mid dead when it is left without edges, unless it
+  // never had any, as for a lone edge.
+  if ( ! dead(mid) && ! m_vertices[mid.i].edge.valid()) m_vertices[mid.i].flags |= kDead;
   if (dead(mid)) mid = VertexId();
 
   if ( ! m_collapse_callouts->callouts.empty())

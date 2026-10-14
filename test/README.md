@@ -21,20 +21,21 @@ with `compare.py`: integers exactly, floating-point values to a relative
 tolerance (default 1e-9). It then reads every surface the C++ library wrote
 back through the C library, to check the writer.
 
-All 320 cases run through both libraries: the 240 of the port of what
+All 323 cases run through both libraries: the 240 of the port of what
 Gled calls, 21 for the distances, the inside test, curvature, merging and
 the centres, 46 for what was ported after: Delaunay triangulation, the
 iso-surface slices, triangle strips, progressive and hierarchical surfaces,
 and graphs; 3 for marching cubes from a seed, which gts-cxx adds and which
-the C side runs as GTS's full marching cubes; and 10 for height fields,
-which run GTS's example `happrox.c` in the C library. The 21 print a line
+the C side runs as GTS's full marching cubes; 10 for height fields, which
+run GTS's example `happrox.c` in the C library; and 3 for the coarsening of
+the open surfaces these make. The 21 print a line
 per vertex or sample point, keyed by its coordinates, and read surfaces the
 C library wrote (`@REF@` in `cases.txt`), so that both programs measure the
 same input. The summaries include whether the surface intersects itself.
 How GTS breaks ties changes with the build of `gts-ref`, which moves cases
 between the categories below. On 2026-10-13:
 
-- 192 cases agree with the C library in every value to 1e-9, and so do
+- 195 cases agree with the C library in every value to 1e-9, and so do
   the surfaces written by the C++ library when read by the C one.
 - 20 are in `test/compare/fixed.txt`: gts-cxx fixes an error of GTS there,
   or departs from it on purpose (see `QUIRKS.md`), so the results differ,

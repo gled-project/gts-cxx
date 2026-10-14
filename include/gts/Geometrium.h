@@ -29,6 +29,7 @@
 #include "gts/Elements.h"
 #include "gts/Geometry.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <flat_set>
@@ -108,8 +109,8 @@ public:
   void set_name(std::string n)    { m_name = std::move(n); }
 
   // Adding a face that is already there, or removing one that is not, does
-  // nothing. A face removed from its last surface is unlinked; see
-  // Geometrium.
+  // nothing; adding a dead face throws std::invalid_argument. A face removed
+  // from its last surface is unlinked; see Geometrium.
   void add_face(FaceId f);
   void remove_face(FaceId f);
   bool contains(FaceId f) const { return m_faces.contains(f); }
@@ -156,9 +157,10 @@ struct Renumbering
 {
   std::vector<Index> vertices, edges, faces;
 
-  VertexId operator()(VertexId v) const { return VertexId(vertices[v.i]); }
-  EdgeId   operator()(EdgeId e) const   { return EdgeId(edges[e.i]); }
-  FaceId   operator()(FaceId f) const   { return FaceId(faces[f.i]); }
+  // An invalid index stays invalid.
+  VertexId operator()(VertexId v) const { return v.valid() ? VertexId(vertices[v.i]) : v; }
+  EdgeId   operator()(EdgeId e) const   { return e.valid() ? EdgeId(edges[e.i]) : e; }
+  FaceId   operator()(FaceId f) const   { return f.valid() ? FaceId(faces[f.i]) : f; }
 };
 
 using RenumberCallout = std::function<void(const Renumbering&)>;
@@ -201,7 +203,9 @@ struct SplitEvent
 using SplitCallout = std::function<void(const SplitEvent&)>;
 
 // The halves of edges that split_face4() has split, so that the faces on
-// both sides of an edge share its halves. Valid until collect().
+// both sides of an edge share its halves. Valid until collect(), and while
+// no half is removed; split_face4() and split_remaining() throw
+// std::logic_error for a removed half.
 class SplitMemo
 {
 private:
@@ -353,7 +357,8 @@ public:
   // are merged from e's two vertices, and those of each kept edge from the
   // pair it was made from. on_removed_edge is called with each edge removed
   // besides e. Returns the new vertex, or an invalid index if it was
-  // removed as well.
+  // removed as well. Throws std::logic_error, before changing anything, for
+  // an edge with a duplicate.
   VertexId collapse_edge(EdgeId e, Vec3 p, const std::function<void(EdgeId)>& on_removed_edge = {});
 
   // gts_vertex_replace: moves every edge of v to with, each becoming the
@@ -584,13 +589,17 @@ private:
       if (auto r = w.lock()) std::erase_if(r->callouts, [&](const auto& c) { return c.first == id; });
     });
   }
-  // Calls the callouts on a copy of the list, so that one may subscribe or cancel.
+  // Calls the callouts on a copy of the list, so that one may subscribe or
+  // cancel; a callout cancelled during the call is not called after.
   template <class F, class... A>
   static void call(const std::shared_ptr<detail::CalloutRegistry<F>>& r, const A&... a)
   {
     if (r->callouts.empty()) return;
-    const auto callouts = r->callouts;
-    for (const auto& c : callouts) c.second(a...);
+    const auto keep = r; // a callout may destroy the owner of r
+    const auto callouts = keep->callouts;
+    for (const auto& c : callouts)
+      if (std::ranges::any_of(keep->callouts, [&](const auto& k) { return k.first == c.first; }))
+        c.second(a...);
   }
 
   // Adds piece to every surface that has parent.

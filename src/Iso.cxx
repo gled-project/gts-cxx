@@ -514,9 +514,11 @@ std::vector<GridCell> cells_near(const CartesianGrid& g, std::span<const Vec3> p
   check_grid(g, "cells_near");
   // The cells from c - band to c + band along one axis, clipped to the grid.
   auto range = [band](double x, double x0, double dx, unsigned n, long& lo, long& hi) {
-    const double c = std::floor((x - x0) / dx);
-    if ( ! std::isfinite(c)) return false;
+    const double t = (x - x0) / dx;
+    if ( ! std::isfinite(t)) return false;
     const double last = n - 2;
+    // A point on the far plane of the grid is in the last cell.
+    const double c = t == n - 1 ? last : std::floor(t);
     if (c + band < 0. || c - band > last) return false;
     lo = long(std::max(c - band, 0.));
     hi = long(std::min(c + band, last));
@@ -552,9 +554,10 @@ std::vector<GridCell> cells_crossing(const CartesianGrid& g, const std::function
   double fa = f(a) - iso;
   if ( ! crosses(fa, f(b) - iso)) return {};
   const double step = std::min({ g.dx, g.dy, g.dz }) / 4;
-  for (int n = 0; n < 100 && distance(a, b) > step; ++n)
+  while (distance(a, b) > step)
   {
     const Vec3 m = 0.5 * (a + b);
+    if (m == a || m == b) break;
     const double fm = f(m) - iso;
     if (crosses(fa, fm)) b = m;
     else                 { a = m; fa = fm; }
@@ -570,6 +573,9 @@ void isosurface_cartesian(Surface& s, CartesianGrid g, const std::function<doubl
 {
   check_grid(g, "isosurface_cartesian");
   const std::uint64_t nx = g.nx, ny = g.ny;
+  // The keys of the crossings, 3 per point, must fit in 64 bits.
+  if (nx * ny > UINT64_MAX / 3 / g.nz)
+    throw std::invalid_argument("gts::isosurface_cartesian: the grid has too many points for the seeded method");
   auto point_id = [&](unsigned i, unsigned j, unsigned k) { return (k * ny + j) * nx + i; };
 
   // f - iso at the points, each evaluated once.

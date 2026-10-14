@@ -66,8 +66,10 @@ inline void set_constraint(Geometrium& g, EdgeId e, bool on = true)
 
 // gts_point_locate: the face of s whose projection contains that of p, by a
 // walk from guess, or from the nearest of n^1/3 faces of s for n faces.
-// The projection of s must be connected, without holes, and convex. Invalid
-// when p lies outside.
+// The projection of s must be connected, without holes, and convex, and a
+// conforming triangulation: the walk is lost at a vertex on an edge of a
+// face, as one split_face4() leaves on its neighbours. Invalid when p lies
+// outside, or when guess is not a counterclockwise face of s.
 FaceId locate(const Surface& s, Vec3 p, FaceId guess = {});
 
 // gts_delaunay_add_vertex_to_face: adds v, which lies in f, to the

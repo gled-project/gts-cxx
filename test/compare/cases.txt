@@ -171,3 +171,10 @@ happrox-points-300                  happrox @DATA@/happrox/points-2000.xyz numbe
 happrox-points-keep-300             happrox @DATA@/happrox/points-2000.xyz number=300 keep
 happrox-points-closed-cost-0.02     happrox @DATA@/happrox/points-2000.xyz cost=0.02 closed
 happrox-points-relative             happrox @DATA@/happrox/points-2000.xyz number=400 relative=0.5
+
+# Coarsening open surfaces made above, which the volume-optimized vertex
+# keeps at their boundaries. The terrain's integer heights make many length
+# costs equal, so it is coarsened by volume only.
+coarsen-terrain-volume-number-1000        coarsen @REF@/happrox-terrain-3000.gts volume number 1000
+coarsen-points-length-number-100          coarsen @REF@/happrox-points-300.gts length number 100
+coarsen-points-volume-number-100          coarsen @REF@/happrox-points-300.gts volume number 100

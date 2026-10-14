@@ -207,8 +207,7 @@ void FacePoints::renumber(const Renumbering& r)
   for (FaceId& f : m_came) f = r(f);
   std::erase_if(m_came, [](FaceId f) { return ! f.valid(); });
   for (auto& L : m_left)
-    for (VertexId& v : L)
-      if (v.valid()) v = r(v);
+    for (VertexId& v : L) v = r(v);
 }
 
 } // namespace gts

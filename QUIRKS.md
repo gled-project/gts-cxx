@@ -16,6 +16,9 @@ end, list where gts-cxx does otherwise than GTS on purpose.
 `test/compare/fixed.txt` lists the comparison cases whose results these
 fixes change, with the check each must pass instead of equality with GTS.
 
+- `BBTree::write_oogl()`, as `gts_bb_tree_draw`, wrote `{ LIST` and the
+  first box's `OFF` on one line, and did not wrap each box in braces, which
+  Geomview does not read. It writes a valid LIST now.
 - Reading `.gts` files: a comment at the end of a line swallowed the
   newline and the line after it, and the C library fails on such files. The
   comment now ends the line.
@@ -87,7 +90,10 @@ fixes change, with the check each must pass instead of equality with GTS.
   it was in a second surface: a face of another surface across such an edge
   joined the component, and a face of the surface that was also in another
   surface was never in any. It crosses the edges with exactly two faces of
-  the surface, and takes each face of the surface once.
+  the surface, and takes each face of the surface once. A face on a
+  non-manifold edge leaves its component, to make one of its own; GTS lost
+  it when its loop over the faces had passed it already, and gts-cxx makes
+  it a component alone.
 - `strips()`, GTS's `gts_surface_strip`, took as neighbours the faces of
   every surface on a face's edges, and failed an assertion on one that was
   not in the surface. It takes those of the surface.
@@ -104,7 +110,11 @@ fixes change, with the check each must pass instead of equality with GTS.
   neighbour numbered after the node, and looped for ever on the first such
   line, so it read no graph with an edge; and it took a node without
   neighbours, an empty line, for an error. gts-cxx reads every neighbour
-  and empty lines.
+  and empty lines, also that of the first node.
+- Reading `.gts` files: GTS allocated arrays for the numbers of vertices
+  and edges in the header before reading them, so a negative or huge number
+  failed in the allocation. gts-cxx reads a negative number as an error and
+  allocates as the elements come.
 
 ## Errors
 

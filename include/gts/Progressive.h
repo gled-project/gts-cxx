@@ -65,7 +65,8 @@ bool collapsible(const Geometrium& g, const VertexSplit& vs);
 // each edge removed besides the collapsed one. Throws std::logic_error,
 // changing nothing, when vs is not collapsible().
 void collapse(Geometrium& g, VertexSplit& vs, const std::function<void(EdgeId)>& on_removed_edge = {});
-// gts_split_expand: undoes collapse(); the faces come back into s.
+// gts_split_expand: undoes collapse(); the faces come back into s. Throws
+// std::logic_error, before changing anything, when vs is not collapsed.
 void expand(Geometrium& g, VertexSplit& vs, Surface& s);
 // gts_split_height: the height of the tree of splits below splits[root].
 unsigned split_height(const std::vector<VertexSplit>& splits, int root);

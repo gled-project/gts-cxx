@@ -444,7 +444,7 @@ void write_oogl(const BBox& b, std::ostream& out)
 
 void BBTree::write_oogl(unsigned depth, std::ostream& out) const
 {
-  out << "{ LIST";
+  out << "{ LIST\n";
   if (m_root >= 0) write_oogl(m_root, 1, depth, out);
   out << "}\n";
 }
@@ -452,7 +452,12 @@ void BBTree::write_oogl(unsigned depth, std::ostream& out) const
 void BBTree::write_oogl(int n, unsigned d, unsigned depth, std::ostream& out) const
 {
   const Node& node = m_nodes[n];
-  if (d == depth) gts::write_oogl(node.box, out);
+  if (d == depth)
+  {
+    out << "{ ";
+    gts::write_oogl(node.box, out);
+    out << "}\n";
+  }
   else if (d < depth && node.child[0] >= 0)
     for (int c : node.child) write_oogl(c, d + 1, depth, out);
 }

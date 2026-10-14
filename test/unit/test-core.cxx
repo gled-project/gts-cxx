@@ -17,6 +17,7 @@
 #include <atomic>
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <numbers>
 #include <print>
 #include <sstream>
@@ -1290,7 +1291,7 @@ static void test_boxes_and_writers()
   CHECK(tree.overlap(q).size() == 4 && tree.is_overlapping(q));
   std::ostringstream boxes;
   tree.write_oogl(1, boxes);
-  CHECK(boxes.str().starts_with("{ LISTOFF 8 6 12\n0 0 0\n6 0 0\n"));
+  CHECK(boxes.str().starts_with("{ LIST\n{ OFF 8 6 12\n0 0 0\n6 0 0\n") && boxes.str().ends_with("}\n}\n"));
 
   std::ostringstream off, vtk, bnd;
   write_oogl(s, off);
@@ -1571,7 +1572,18 @@ static void test_iso_seeded()
   isosurface_cartesian(empty, cg, sphere, 1., {});
   CHECK(empty.face_number() == 0 && empty.vertex_number() == 0);
   CHECK(cells_near(cg, std::array{ Vec3{ 5, 0, 0 } }).empty());
-  CHECK(cells_near(cg, std::array{ Vec3{ 1.3, 1.25, -1.25 } }, 1).size() == 2);
+  CHECK(cells_near(cg, std::array{ Vec3{ 1.3, 1.25, -1.25 } }, 1).size() == 4);
+  // A point on the far planes of the grid is in the last cell.
+  const auto far = cells_near(cg, std::array{ Vec3{ 1.25, 1.25, 1.25 } });
+  CHECK(far.size() == 1 && far[0] == (GridCell{ n - 1, n - 1, n - 1 }));
+  {
+    Geometrium gc;
+    const CartesianGrid huge{ 1u << 31, 1u << 31, 8, 0, 1, 0, 1, 0, 1 };
+    bool threw = false;
+    try { isosurface_cartesian(gc.new_surface(), huge, sphere, 1., std::array{ GridCell{} }); }
+    catch (const std::invalid_argument&) { threw = true; }
+    CHECK(threw);
+  }
 
   // Two parts: a seed on one makes that part only; seeds on both make what
   // the full method makes.
@@ -1746,6 +1758,299 @@ static void test_face_points()
   CHECK(left < n && points_consistent(fp, s, left));
 }
 
+// Random sequences of changes to a Delaunay triangulation, with the points
+// read at random moments; the store must stay consistent after each.
+static void test_face_points_random()
+{
+  for (unsigned seed : { 1u, 2u, 3u, 4u, 5u })
+  {
+    unsigned x = seed * 2654435761u;
+    auto rnd = [&] { x = x * 1103515245u + 12345u; return double((x >> 8) & 0xffff) / 65536.; };
+    auto pick = [&](std::size_t n) { return std::size_t(rnd() * double(n)); };
+    Geometrium g;
+    Surface& s = g.new_surface();
+    std::vector<Vec3> pts;
+    for (int i = 0; i < 1500; ++i) pts.push_back({ rnd(), rnd(), 0. });
+    const FaceId t = enclosing_triangle(g, pts, 10.);
+    const auto hull = g.vertices_of(t);
+    s.add_face(t);
+    FacePoints fp(s);
+    for (const Vec3& p : pts) fp.add(p, t);
+
+    std::size_t n = pts.size();
+    FacePoints::PointId next = 0;
+    std::vector<VertexId> inner;
+    auto interior = [&](VertexId v) { return v != hull[0] && v != hull[1] && v != hull[2]; };
+    // An edge of s between two faces whose quadrilateral is convex, so that
+    // a swap keeps the faces counterclockwise.
+    auto swappable = [&]() -> EdgeId {
+      for (int tries = 0; tries < 50; ++tries)
+      {
+        const FaceId f = *std::next(s.faces().begin(), std::ptrdiff_t(pick(s.face_number())));
+        const EdgeId e = g.face(f).e[pick(3)];
+        FaceId other;
+        for (FaceId h : g.faces_of(e)) if (h != f && s.contains(h)) other = h;
+        if ( ! other.valid()) continue;
+        const VertexId a = g.edge(e).v[0], b = g.edge(e).v[1];
+        const VertexId c = g.opposite_vertex(f, e), d = g.opposite_vertex(other, e);
+        const Vec3 pa = g.vertex(a).p, pb = g.vertex(b).p, pc = g.vertex(c).p, pd = g.vertex(d).p;
+        if (orient2d(pc, pd, pa) * orient2d(pc, pd, pb) < 0. && orient2d(pa, pb, pc) * orient2d(pa, pb, pd) < 0.)
+          return e;
+      }
+      return {};
+    };
+    // An inner edge whose collapse to its middle keeps every face around it
+    // counterclockwise.
+    auto collapsible_edge = [&]() -> EdgeId {
+      for (int tries = 0; tries < 50; ++tries)
+      {
+        const FaceId f = *std::next(s.faces().begin(), std::ptrdiff_t(pick(s.face_number())));
+        const EdgeId e = g.face(f).e[pick(3)];
+        const VertexId a = g.edge(e).v[0], b = g.edge(e).v[1];
+        if ( ! interior(a) || ! interior(b) || ! g.collapsible(e)) continue;
+        const Vec3 m = midpoint(g, e);
+        bool ok = true;
+        for (VertexId w : { a, b })
+          for (FaceId h : vertex_faces(s, w))
+          {
+            const auto vs = g.vertices_of(h);
+            if (std::ranges::count(vs, a) + std::ranges::count(vs, b) == 2) continue;
+            std::array<Vec3, 3> q;
+            for (int k = 0; k < 3; ++k) q[k] = vs[k] == w ? m : g.vertex(vs[k]).p;
+            if ( ! (orient2d(q[0], q[1], q[2]) > 0.)) ok = false;
+          }
+        if (ok) return e;
+      }
+      return {};
+    };
+
+    for (int step = 0; step < 400; ++step)
+    {
+      const double r = rnd();
+      if (r < 0.45 && next < pts.size())
+      {
+        const FacePoints::PointId i = next++;
+        fp.remove(i);
+        --n;
+        const VertexId v = g.add_vertex(pts[i]);
+        if (delaunay_add_vertex(s, v).valid()) CHECK(false);
+        inner.push_back(v);
+      }
+      else if (r < 0.65 && ! inner.empty())
+      {
+        const std::size_t k = pick(inner.size());
+        delaunay_remove_vertex(s, inner[k]);
+        inner.erase(inner.begin() + std::ptrdiff_t(k));
+      }
+      else if (r < 0.8)
+      {
+        if (const EdgeId e = swappable(); e.valid()) swap_edge(s, e);
+      }
+      else if (r < 0.9)
+      {
+        if (const EdgeId e = collapsible_edge(); e.valid())
+        {
+          const VertexId a = g.edge(e).v[0], b = g.edge(e).v[1];
+          const VertexId v = g.collapse_edge(e, midpoint(g, e));
+          std::erase_if(inner, [&](VertexId w) { return w == a || w == b; });
+          if (v.valid()) inner.push_back(v);
+        }
+      }
+      else if (r < 0.93)
+      {
+        // Vertex ids change; keep track of the interior ones through the map.
+        std::vector<VertexId> renumbered;
+        Subscription sub = g.on_renumber([&](const Renumbering& rn) {
+          for (VertexId v : inner) if (const VertexId w = rn(v); w.valid()) renumbered.push_back(w);
+        });
+        g.collect();
+        inner = renumbered;
+      }
+      if (rnd() < 0.2 && ! points_consistent(fp, s, n))
+      {
+        CHECK(false);
+        std::println("  seed {} step {}", seed, step);
+        break;
+      }
+    }
+    CHECK(points_consistent(fp, s, n));
+  }
+}
+
+// Cases from the reviews of 2026-10-13, each of which failed before.
+static void test_robustness()
+{
+  // A callout that cancels another subscription during a call: the
+  // cancelled one is not called, and its state may be gone.
+  {
+    Geometrium g;
+    Surface& s = g.new_surface();
+    int late = 0;
+    std::unique_ptr<Subscription> b;
+    Subscription a = s.on_face([&](const FaceEvent&) { b.reset(); });
+    b = std::make_unique<Subscription>(s.on_face([&](const FaceEvent&) { if ( ! b) ++late; }));
+    tetrahedron(g, s);
+    CHECK( ! b && late == 0);
+  }
+  // import() into a surface of another Geometrium.
+  {
+    Geometrium a, b;
+    Surface& sa = a.new_surface();
+    tetrahedron(a, sa);
+    Surface& sb = b.new_surface();
+    bool threw = false;
+    try { a.import(a, sa, sb); }
+    catch (const std::invalid_argument&) { threw = true; }
+    CHECK(threw && sb.face_number() == 0);
+  }
+  // A SplitMemo whose half was split again.
+  {
+    Geometrium g;
+    Surface& s = g.new_surface();
+    const std::array<VertexId, 4> q = { g.add_vertex({ 0, 0, 0 }), g.add_vertex({ 1, 0, 0 }),
+                                        g.add_vertex({ 1, 1, 0 }), g.add_vertex({ 0, 1, 0 }) };
+    const EdgeId diagonal = g.add_edge(q[0], q[2]);
+    const FaceId f1 = g.add_face(g.add_edge(q[0], q[1]), g.add_edge(q[1], q[2]), diagonal);
+    s.add_face(f1);
+    s.add_face(g.add_face(diagonal, g.add_edge(q[2], q[3]), g.add_edge(q[3], q[0])));
+    SplitMemo memo;
+    const Splitter mid = [](Geometrium& g, EdgeId e) { return g.add_vertex(midpoint(g, e)); };
+    g.split_face4(f1, mid, memo);
+    EdgeId half;
+    for (EdgeId e : g.edges_of(q[0]))
+    {
+      const VertexId o = g.edge(e).v[0] == q[0] ? g.edge(e).v[1] : g.edge(e).v[0];
+      if (g.vertex(o).p == Vec3{ 0.5, 0.5, 0 }) half = e;
+    }
+    CHECK(half.valid());
+    g.split_edge(half, mid(g, half));
+    bool threw = false;
+    try { g.split_remaining(memo); }
+    catch (const std::logic_error&) { threw = true; }
+    CHECK(threw);
+  }
+  // collapse_edge() of a lone edge leaves no vertex; of an edge with a
+  // duplicate, it throws before changing anything.
+  {
+    Geometrium g;
+    const VertexId a = g.add_vertex({ 0, 0, 0 }), b = g.add_vertex({ 1, 0, 0 });
+    const EdgeId e = g.add_edge(a, b);
+    CHECK( ! g.collapse_edge(e, { 0.5, 0, 0 }).valid());
+    std::size_t live = 0;
+    for (Index i = 0; i < g.vertex_capacity(); ++i) live += ! g.dead(VertexId(i));
+    CHECK(live == 0);
+    const VertexId c = g.add_vertex({ 0, 0, 0 }), d = g.add_vertex({ 1, 0, 0 });
+    const EdgeId e1 = g.add_edge(c, d);
+    g.add_edge(c, d);
+    bool threw = false;
+    try { g.collapse_edge(e1, { 0.5, 0, 0 }); }
+    catch (const std::logic_error&) { threw = true; }
+    CHECK(threw && ! g.dead(e1) && ! g.dead(c) && ! g.dead(d));
+  }
+  // split_components() takes every face once, also a non-manifold face
+  // that leaves a component after the walk passed it.
+  {
+    Geometrium g;
+    Surface& s = g.new_surface();
+    std::array<VertexId, 7> v;
+    for (int i = 0; i < 7; ++i) v[i] = g.add_vertex({ double(i), double(i * i % 5), double(i % 3) });
+    auto edge = [&](int i, int j) { const EdgeId e = g.find_edge(v[i], v[j]); return e.valid() ? e : g.add_edge(v[i], v[j]); };
+    for (const char* t : { "041", "254", "061", "063", "025", "206", "450", "413", "430", "536", "256" })
+    {
+      const int i = t[0] - '0', j = t[1] - '0', k = t[2] - '0';
+      s.add_face(g.add_face(edge(i, j), edge(j, k), edge(k, i)));
+    }
+    std::map<FaceId, int> seen;
+    for (Surface* c : split_components(s))
+      for (FaceId f : c->faces()) ++seen[f];
+    CHECK(seen.size() == 11 && std::ranges::all_of(seen, [](const auto& p) { return p.second == 1; }));
+  }
+  // Readers: a Jostle file whose first node has no neighbours, and counts
+  // that are negative, huge, or more than the file holds.
+  {
+    std::istringstream jostle("3 1\n\n3\n2\n");
+    Graph gr;
+    const auto r = read_jostle(gr, jostle);
+    CHECK(r && r->size() == 3 && edges_of(*r).size() == 1);
+    for (const char* text : { "2000000000 0\n", "-1 0\n", "3 0\n\n\n" })
+    {
+      std::istringstream in(text);
+      Graph gr2;
+      CHECK( ! read_graph(gr2, in).has_value());
+    }
+    for (const char* text : { "-5 6 4\n", "4 -6 4\n", "999999999999 6 4\n0 0 0\n" })
+    {
+      Geometrium g;
+      std::istringstream in(text);
+      CHECK( ! read_gts(g, in).has_value());
+    }
+  }
+  // Progressive surfaces read back: a face of the split being read, a file
+  // cut anywhere after the surface, and a split without faces.
+  {
+    Geometrium g;
+    Surface& s = g.new_surface();
+    generate_sphere(s, 2);
+    PSurface ps(s, stop_below_edges(0));
+    std::ostringstream out;
+    ps.write(out);
+    std::vector<std::string> lines;
+    {
+      std::istringstream in(out.str());
+      for (std::string l; std::getline(in, l); ) lines.push_back(l);
+    }
+    unsigned nv, ne, nf;
+    std::istringstream(lines[0]) >> nv >> ne >> nf;
+    const std::size_t h = 1 + nv + ne + nf; // the number of splits
+    auto read = [&](const std::vector<std::string>& ls) {
+      std::string text;
+      for (const auto& l : ls) text += l + '\n';
+      Geometrium g2;
+      std::istringstream in(text);
+      return PSurface::read(g2, in).has_value();
+    };
+    CHECK(read(lines));
+    for (std::size_t cut = h + 1; cut < lines.size(); ++cut)
+      if (read(std::vector(lines.begin(), lines.begin() + std::ptrdiff_t(cut)))) { CHECK(false); break; }
+    std::vector<std::string> bad = lines;
+    std::istringstream(lines[h + 4]) >> ne; // the first face, and its flags
+    unsigned flags;
+    std::istringstream(lines[h + 4]).ignore(64, ' ') >> flags;
+    bad[h + 7] = std::format("{} {}", nf + 1, flags); // the split's own first face
+    CHECK( ! read(bad));
+    bad = lines;
+    bad[h + 1] = std::format("{} 0", lines[h + 1].substr(0, lines[h + 1].find(' ')));
+    CHECK( ! read(bad));
+  }
+  // An invalid index stays invalid through renumbering; a dead face cannot
+  // join a surface; expand() refuses a split that is not collapsed.
+  {
+    Geometrium g;
+    Surface& s = g.new_surface();
+    const Tet t = tetrahedron(g, s);
+    Renumbering r;
+    r.faces.assign(g.face_capacity(), 0);
+    CHECK( ! r(FaceId()).valid() && ! r(VertexId()).valid() && ! r(EdgeId()).valid());
+    s.remove_face(t.f[0]);
+    bool threw = false;
+    try { s.add_face(t.f[0]); }
+    catch (const std::invalid_argument&) { threw = true; }
+    CHECK(threw);
+  }
+  {
+    Geometrium g;
+    Surface& s = g.new_surface();
+    generate_sphere(s, 2);
+    PSurface ps(s, stop_below_edges(0));
+    ps.set_vertex_number(ps.max_vertex_number());
+    VertexSplit vs = ps.splits().front();
+    bool threw = false;
+    try { expand(g, vs, s); }
+    catch (const std::logic_error&) { threw = true; }
+    CHECK(threw);
+  }
+}
+
 static void test_height_field()
 {
   // A plane: the corners make it exactly, so nothing else is inserted.
@@ -1849,7 +2154,9 @@ int main()
   test_iso_seeded();
   test_face_events();
   test_face_points();
+  test_face_points_random();
   test_height_field();
+  test_robustness();
   std::println("{}", g_failed ? "FAILED" : "all passed");
   return g_failed != 0;
 }

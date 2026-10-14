@@ -30,7 +30,7 @@ struct Matrix4
   static Matrix4 scale(Vec3 s);
   static Matrix4 translate(Vec3 t);
   // gts_matrix_rotate: by angle, in radians, round axis, which need not be
-  // of unit length.
+  // of unit length but must not be zero.
   static Matrix4 rotate(Vec3 axis, double angle);
   // gts_matrix_projection: the rotation whose columns are the unit vectors
   // along f's first edge, along the normal of f crossed with it, and along

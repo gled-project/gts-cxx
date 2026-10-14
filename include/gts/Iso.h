@@ -143,7 +143,9 @@ struct GridCell
 };
 
 // The cells of g that hold the points, and those within band cells of
-// them; sorted, each once.
+// them; sorted, each once. A point on the face between two cells is in the
+// one above it; a band of 1 also takes the cell below, which a vertex of a
+// surface at iso may need.
 std::vector<GridCell> cells_near(const CartesianGrid& g, std::span<const Vec3> points, unsigned band = 0);
 // The same for the vertices of s, such as the surface of a previous step.
 std::vector<GridCell> cells_near(const CartesianGrid& g, const Surface& s, unsigned band = 0);
@@ -157,7 +159,8 @@ std::vector<GridCell> cells_crossing(const CartesianGrid& g, const std::function
 // makes only the parts of the surface through the seeds, and any part that
 // shares a cell with them. Seeds the surface does not cross are skipped. The faces are made in the order of
 // isosurface_cartesian(), so for a surface of one part the two give the
-// same faces.
+// same faces. Throws std::invalid_argument for a grid of more than 2^64 / 3
+// points.
 void isosurface_cartesian(Surface& s, CartesianGrid g, const std::function<double(Vec3)>& f, double iso,
                           std::span<const GridCell> seeds);
 

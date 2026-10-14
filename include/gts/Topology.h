@@ -92,7 +92,8 @@ private:
 // surfaces of its Geometrium, in the order of GTS's list. A component is
 // grown from a face across edges with exactly two faces of s; the faces of
 // a component on an edge with more than two of its faces then leave it and
-// make components of their own.
+// make components of their own; one that the walk has passed by then is a
+// component alone.
 std::vector<Surface*> split_components(Surface& s);
 
 } // namespace gts

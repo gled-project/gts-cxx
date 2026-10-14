@@ -392,6 +392,14 @@ std::vector<Surface*> split_components(Surface& s)
       grow_component(s, f, taken, components);
   for (FaceId f : s.faces())
     grow_component(s, f, taken, components);
+  // A face that left a component after the loop passed it, which GTS lost.
+  for (FaceId f : s.faces())
+    if ( ! taken[f.i])
+    {
+      taken[f.i] = true;
+      components.push_back(&s.geometrium().new_surface());
+      components.back()->add_face(f);
+    }
   std::reverse(components.begin(), components.end());
   return components;
 }

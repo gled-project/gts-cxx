@@ -305,6 +305,7 @@ std::expected<NodeSet, ReadError> read_graph(Graph& gr, std::istream& in)
   };
   const long nn = count("number of nodes");
   const long ne = f.failed() ? 0 : count("number of edges");
+  if ( ! f.failed() && (nn < 0 || ne < 0)) f.fail("a negative number of nodes or edges");
   if (f.failed()) return std::unexpected(f.error());
   end_line(f);
 
@@ -312,6 +313,7 @@ std::expected<NodeSet, ReadError> read_graph(Graph& gr, std::istream& in)
   std::vector<GNodeId> nodes;
   for (long n = 0; n < nn && ! f.failed(); ++n)
   {
+    if (f.type() == T::None) { f.fail(std::format("only `{}' nodes read out of `{}'", n, nn)); break; }
     nodes.push_back(gr.add_node());
     g.add(nodes.back());
     end_line(f);
@@ -345,7 +347,9 @@ std::expected<NodeSet, ReadError> read_jostle(Graph& gr, std::istream& in)
   f.next();
   if (f.type() != T::Int) { f.fail("expecting an integer (number of edges)"); return std::unexpected(f.error()); }
   long ne = std::atol(f.token().c_str());
-  f.skip_line();
+  // The rest of the header line only: a blank line after it is node 1.
+  while ( ! f.failed() && f.type() != T::None && f.ch() != '\n') f.next();
+  if (f.ch() == '\n') f.next();
 
   NodeSet g(gr);
   std::vector<GNodeId> nodes;

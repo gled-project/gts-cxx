@@ -27,6 +27,7 @@ namespace gts {
 
 void Surface::add_face(FaceId f)
 {
+  if (m_geo->dead(f)) throw std::invalid_argument("gts::Surface::add_face: the face is dead");
   if (m_faces.insert(f).second)
   {
     Face& F = m_geo->m_faces[f.i];
@@ -588,6 +589,8 @@ void Geometrium::import(const Geometrium& g, const Surface& src, Surface& dst)
 {
   if (&dst == &src)
     throw std::invalid_argument("gts::Geometrium::import: copying a surface into itself");
+  if (&dst.geometrium() != this || &src.geometrium() != &g)
+    throw std::invalid_argument("gts::Geometrium::import: a surface of another Geometrium");
   std::vector<Index> map_v(g.vertex_capacity(), kNone), map_e(g.edge_capacity(), kNone);
 
   // Attributes present on both sides under the same name and type.

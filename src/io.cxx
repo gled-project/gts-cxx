@@ -8,6 +8,7 @@
 #include "io_detail.h"
 
 #include <cstdlib>
+#include <algorithm>
 #include <cstring>
 #include <format>
 #include <fstream>
@@ -40,6 +41,7 @@ std::expected<Surface*, ReadError> detail::read_gts(Geometrium& g, Tokenizer& f,
   const long nv = read_count("number of vertices");
   const long ne = f.failed() ? 0 : read_count("number of edges");
   const long nf = f.failed() ? 0 : read_count("number of faces");
+  if ( ! f.failed() && (nv < 0 || ne < 0 || nf < 0)) f.fail("a negative number of vertices, edges or faces");
   if (f.failed()) return std::unexpected(f.error());
 
   bool binary = false;
@@ -63,8 +65,9 @@ std::expected<Surface*, ReadError> detail::read_gts(Geometrium& g, Tokenizer& f,
 
   std::vector<VertexId> vertices;
   std::vector<EdgeId>   edges;
-  vertices.reserve(nv);
-  edges.reserve(ne);
+  // The counts are the file's; a wrong one must not allocate at once.
+  vertices.reserve(std::size_t(std::min(nv, 1L << 20)));
+  edges.reserve(std::size_t(std::min(ne, 1L << 20)));
 
   // Vertices: point_read
   while (long(vertices.size()) < nv && ! f.failed())

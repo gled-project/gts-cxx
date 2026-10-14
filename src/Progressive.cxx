@@ -264,7 +264,9 @@ void collapse(Geometrium& g, VertexSplit& vs, const std::function<void(EdgeId)>&
 void expand(Geometrium& g, VertexSplit& vs, Surface& s)
 {
   const VertexId v = vs.v, v1 = vs.v1, v2 = vs.v2;
-  for (VertexId x : { v1, v2 }) if (g.parked(x)) g.unpark(x);
+  if ( ! g.parked(v1) || ! g.parked(v2) || g.dead(v))
+    throw std::logic_error("gts::expand: the split is not collapsed");
+  for (VertexId x : { v1, v2 }) g.unpark(x);
   const EdgeId e = g.add_edge(v1, v2);
   Marks marks;
   for (auto& cf : vs.cfaces) cface_expand(g, cf, e, v1, v2, v, s, marks);
@@ -537,12 +539,22 @@ std::expected<std::unique_ptr<PSurface>, ReadError> PSurface::read(Geometrium& g
     while ( ! f.failed() && f.type() != detail::Tokenizer::None && f.ch() != '\n') f.next();
     if (f.ch() == '\n') f.next();
   };
+  // A face index must name a face that exists, not one of the split being
+  // read, which gets its face when the split is expanded.
+  auto read_face = [&]() -> FaceId {
+    const std::size_t it = read_index(faces.size(), "face index", "face");
+    if (f.failed()) return {};
+    if ( ! faces[it - 1].valid()) fail(std::format("face index `{}' names a face of the split being read", it));
+    return faces[it - 1];
+  };
+  // An empty list is an empty line; the end of the file is not one.
   auto read_faces = [&](std::vector<FaceId>& a) {
+    if ( ! f.failed() && f.type() == detail::Tokenizer::None) fail("unexpected end of file (list of faces)");
     while ( ! f.failed() && f.type() == detail::Tokenizer::Int)
     {
-      const std::size_t it = read_index(faces.size(), "face index", "face");
+      const FaceId t = read_face();
       if (f.failed()) return;
-      a.push_back(faces[it - 1]);
+      a.push_back(t);
       f.next();
     }
     if ( ! f.failed() && f.ch() != '\n' && f.type() != detail::Tokenizer::None)
@@ -560,6 +572,7 @@ std::expected<std::unique_ptr<PSurface>, ReadError> PSurface::read(Geometrium& g
     f.next();
     if (f.type() != detail::Tokenizer::Int) { fail("expecting an integer (ncf)"); break; }
     const long ncf = std::atol(f.token().c_str());
+    if (ncf < 1) { fail(std::format("a split with `{}' faces", ncf)); break; }
     f.next();
     f.skip_line();
 
@@ -580,9 +593,8 @@ std::expected<std::unique_ptr<PSurface>, ReadError> PSurface::read(Geometrium& g
     for (long k = 0; k < ncf && ! f.failed(); ++k)
     {
       VertexSplit::CFace cf;
-      const std::size_t it = read_index(faces.size(), "face index", "face");
+      cf.t = read_face();
       if (f.failed()) break;
-      cf.t = faces[it - 1];
       f.next();
       if (f.type() != detail::Tokenizer::Int) { fail("expecting an integer (flags)"); break; }
       cf.flags = unsigned(std::atol(f.token().c_str()));
@@ -609,6 +621,7 @@ std::expected<std::unique_ptr<PSurface>, ReadError> PSurface::read(Geometrium& g
     expand(g, added, **s);
     for (std::size_t k = 0; k < slots.size(); ++k) faces[slots[k]] = added.cfaces[k].f;
   }
+  if ( ! f.failed() && ps->m_pos < ns) fail(std::format("only `{}' splits read out of `{}'", ps->m_pos, ns));
   if (f.failed()) return std::unexpected(f.error());
 
   // gts_psurface_close: the splits read, last first, so that the finest

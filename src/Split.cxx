@@ -92,6 +92,8 @@ void Geometrium::split_remaining(SplitMemo& memo)
     const auto h = memo.m_halves[i];
     const EdgeId e(i);
     if ( ! h[0].valid() || dead(e)) continue;
+    if (dead(h[0]) || dead(h[1]))
+      throw std::logic_error("gts::Geometrium::split_remaining: a half of a split edge was removed");
     // h[0] runs from one end of e to the vertex that split it.
     const VertexId m = m_edges[h[0].i].v[1];
     const bool first = m_edges[h[0].i].v[0] == m_edges[e.i].v[0];
@@ -108,6 +110,8 @@ Geometrium::EdgeHalves Geometrium::split_or_find(EdgeId e, VertexId a, VertexId 
   auto& h = memo.m_halves[e.i];
   if (h[0].valid())
   {
+    if (dead(h[0]) || dead(h[1]))
+      throw std::logic_error("gts::Geometrium::split_face4: a half of a split edge was removed");
     EdgeHalves r = { m_edges[h[0].i].v[1], h[0], h[1] };
     if (m_edges[r.from_a.i].v[0] == b) std::swap(r.from_a, r.from_b);
     return r;
