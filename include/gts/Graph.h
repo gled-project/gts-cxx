@@ -279,7 +279,7 @@ double bkl_refine(GraphBisection& bg, unsigned mmax, float imbalance);
 // each level on the way back.
 GraphBisection bisection(Graph& gr, NodeSet& g, unsigned ntry, unsigned mmax, unsigned nmin, float imbalance);
 // gts_graph_recursive_bisection: 2^n parts by bisection() of the parts,
-// in the order of GTS's list.
+// in the order of GTS's list. Each part is bisected on a copy of its own.
 std::vector<NodeSet> recursive_bisection(Graph& gr, NodeSet& g, unsigned n, unsigned ntry, unsigned mmax,
                                          unsigned nmin, float imbalance);
 

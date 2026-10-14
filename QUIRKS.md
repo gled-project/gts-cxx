@@ -360,6 +360,12 @@ None open.
   them in the order of hash tables keyed by pointer, so partitions differ in
   which of equal choices they take; their quality is alike (see
   `test/compare/ties.txt`). Weights are floats, as in GTS.
+- `recursive_bisection()` bisects each part on a copy of its own, with
+  the part's nodes and edges in the same order. GTS bisected the parts in
+  one graph, where coarsening a part reordered the edge lists of the
+  nodes it touched, those of other parts included, and kept the coarse
+  nodes. Partitions differ in which of equal choices they take; for the
+  sphere of 81920 faces in 256 parts, gts-cxx takes 1.6 s and GTS 5 s.
 - `write_graph()` writes the edges between nodes of the set. GTS's
   `gts_graph_write` wrote every edge of the set's nodes, numbering a node
   outside the set 0. `write_dot()` does the same, and labels nodes and

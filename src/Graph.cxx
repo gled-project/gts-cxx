@@ -1171,18 +1171,58 @@ GraphBisection bisection(Graph& gr, NodeSet& g, unsigned ntry, unsigned mmax, un
 
 namespace {
 
+// The halves of bisection() of g, run on a copy in a graph of its own, with the nodes and edges
+// in the same order, so that the coarse nodes of each bisection do not pile
+// up in gr and make the node sets of later ones long. map is all invalid on
+// entry and on return.
+std::pair<NodeSet, NodeSet> compact_bisection(Graph& gr, const NodeSet& g, unsigned ntry, unsigned mmax, unsigned nmin,
+                                              float imbalance, std::vector<GNodeId>& map)
+{
+  std::vector<GNodeId> nodes = g.nodes();
+  std::vector<GNodeId> by_index = nodes;
+  std::ranges::sort(by_index, {}, [](GNodeId n) { return n.i; });
+  Graph sub;
+  std::vector<GNodeId> back;
+  back.reserve(nodes.size());
+  for (GNodeId n : by_index)
+  {
+    map[n.i] = sub.add_node(gr.weight(n), gr.data(n));
+    back.push_back(n);
+  }
+  std::vector<GEdgeId> edges;
+  for (GNodeId n : by_index)
+    for (GEdgeId e : gr.edges_of(n))
+    {
+      const auto& x = gr.ends(e);
+      if ( ! gr.dead(e) && x[0] == n && map[x[1].i].valid()) edges.push_back(e);
+    }
+  std::ranges::sort(edges, {}, [](GEdgeId e) { return e.i; });
+  for (GEdgeId e : edges)
+    sub.add_edge(map[gr.ends(e)[0].i], map[gr.ends(e)[1].i], gr.weight(e), gr.data(e));
+  NodeSet sg(sub);
+  for (GNodeId n : nodes) sg.add(map[n.i]);
+  for (GNodeId n : nodes) map[n.i] = GNodeId();
+
+  const GraphBisection sbg = bisection(sub, sg, ntry, mmax, nmin, imbalance);
+  auto lift = [&](const NodeSet& s) {
+    NodeSet r(gr);
+    for (GNodeId n : s.nodes()) r.add(back[n.i]);
+    return r;
+  };
+  return { lift(sbg.g1), lift(sbg.g2) };
+}
+
 void recursive_bisection(Graph& gr, NodeSet& g, unsigned np, unsigned ntry, unsigned mmax, unsigned nmin,
-                         float imbalance, std::vector<NodeSet>& list)
+                         float imbalance, std::vector<NodeSet>& list, std::vector<GNodeId>& map)
 {
   if (np == 0)
   {
     list.insert(list.begin(), std::move(g));
     return;
   }
-  GraphBisection bg = bisection(gr, g, ntry, mmax, nmin, imbalance);
-  NodeSet g1 = std::move(bg.g1), g2 = std::move(bg.g2);
-  recursive_bisection(gr, g1, np - 1, ntry, mmax, nmin, imbalance, list);
-  recursive_bisection(gr, g2, np - 1, ntry, mmax, nmin, imbalance, list);
+  auto [g1, g2] = compact_bisection(gr, g, ntry, mmax, nmin, imbalance, map);
+  recursive_bisection(gr, g1, np - 1, ntry, mmax, nmin, imbalance, list, map);
+  recursive_bisection(gr, g2, np - 1, ntry, mmax, nmin, imbalance, list, map);
 }
 
 } // namespace
@@ -1192,10 +1232,8 @@ std::vector<NodeSet> recursive_bisection(Graph& gr, NodeSet& g, unsigned n, unsi
 {
   if (n == 0) throw std::invalid_argument("gts::recursive_bisection: n must be positive");
   std::vector<NodeSet> list;
-  GraphBisection bg = bisection(gr, g, ntry, mmax, nmin, imbalance);
-  NodeSet g1 = std::move(bg.g1), g2 = std::move(bg.g2);
-  recursive_bisection(gr, g1, n - 1, ntry, mmax, nmin, imbalance, list);
-  recursive_bisection(gr, g2, n - 1, ntry, mmax, nmin, imbalance, list);
+  std::vector<GNodeId> map(gr.node_capacity());
+  recursive_bisection(gr, g, n, ntry, mmax, nmin, imbalance, list, map);
   return list;
 }
 
