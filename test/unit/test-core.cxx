@@ -6,7 +6,8 @@
 // the inside test, curvature, the kd-tree and merging; neighbourhoods,
 // Delaunay triangulation, matrices, box overlaps, the writers, strips,
 // parked elements, progressive and hierarchical surfaces, graphs, the
-// iso-surface slices and marching cubes from seeds.
+// iso-surface slices and marching cubes from seeds; face events, points
+// kept by faces, and height fields.
 //
 // Copyright (C) 2026 Matevz Tadel
 // SPDX-License-Identifier: LGPL-2.1-or-later
@@ -1593,6 +1594,218 @@ static void test_iso_seeded()
   CHECK(same_faces(both_full, both));
 }
 
+static void test_face_events()
+{
+  Geometrium g;
+  Surface& s = g.new_surface();
+  Surface& other = g.new_surface();
+  std::vector<std::pair<FaceId, bool>> ev;
+  Subscription sub = s.on_face([&](const FaceEvent& e) {
+    // A face that leaves is still linked.
+    if ( ! e.added) CHECK( ! g.dead(e.face) && ! s.contains(e.face));
+    ev.emplace_back(e.face, e.added);
+  });
+  auto count = [&](bool added) { return std::ranges::count(ev, added, &std::pair<FaceId, bool>::second); };
+
+  const Tet t = tetrahedron(g, s);
+  CHECK(ev.size() == 4 && count(true) == 4);
+  s.add_face(t.f[0]);
+  other.add_face(t.f[0]);
+  CHECK(ev.size() == 4);
+  s.remove_face(t.f[0]);
+  s.remove_face(t.f[0]);
+  CHECK(ev.size() == 5 && ev.back() == std::pair(t.f[0], false) && ! g.dead(t.f[0]));
+  s.add_face(t.f[0]);
+  ev.clear();
+
+  // Splits add the pieces; the parent keeps its index and stays.
+  g.split_face4(t.f[3], [](Geometrium& g, EdgeId e) { return g.add_vertex(midpoint(g, e)); });
+  CHECK(count(true) > 0 && count(false) == 0);
+  ev.clear();
+  // A swap adds two faces and removes two.
+  Geometrium g2;
+  Surface& s2 = g2.new_surface();
+  std::vector<std::pair<FaceId, bool>> ev2;
+  const std::array<VertexId, 4> q = { g2.add_vertex({ 0, 0, 0 }), g2.add_vertex({ 1, 0, 0 }),
+                                      g2.add_vertex({ 1, 1, 0 }), g2.add_vertex({ 0, 1, 0 }) };
+  const EdgeId diagonal = g2.add_edge(q[0], q[2]);
+  s2.add_face(g2.add_face(g2.add_edge(q[0], q[1]), g2.add_edge(q[1], q[2]), diagonal));
+  s2.add_face(g2.add_face(diagonal, g2.add_edge(q[2], q[3]), g2.add_edge(q[3], q[0])));
+  Subscription sub2 = s2.on_face([&](const FaceEvent& e) { ev2.emplace_back(e.face, e.added); });
+  swap_edge(s2, diagonal);
+  CHECK(ev2.size() == 4 && ev2[0].second && ev2[1].second && ! ev2[2].second && ! ev2[3].second);
+  // A reset subscription hears nothing.
+  sub2.reset();
+  ev2.clear();
+  s2.remove_face(*s2.faces().begin());
+  CHECK(ev2.empty());
+  // A collapse and a destroy remove the faces on the edge.
+  const std::size_t before = s.face_number();
+  const EdgeId e = *g.edges_of(*s.vertices().begin()).begin();
+  std::size_t on_e = 0;
+  for (FaceId f : g.faces_of(e)) on_e += s.contains(f);
+  g.collapse_edge(e, midpoint(g, e));
+  CHECK(count(false) == std::ptrdiff_t(on_e) && s.face_number() == before - on_e);
+  ev.clear();
+  const EdgeId e2 = *g.edges_of(*s.vertices().begin()).begin();
+  g.destroy(e2);
+  CHECK(count(false) > 0 && count(true) == 0);
+  // Removing a surface removes each of its faces; the subscription may
+  // outlive the surface.
+  ev.clear();
+  const std::size_t n = s.face_number();
+  g.remove_surface(other);
+  CHECK(ev.empty());
+  g.remove_surface(s);
+  CHECK(n > 0 && count(false) == std::ptrdiff_t(n));
+  sub.reset();
+}
+
+// Whether every point not removed is in the list of exactly one face of s,
+// whose projection holds it, and there are n of them.
+static bool points_consistent(FacePoints& fp, const Surface& s, std::size_t n)
+{
+  const Geometrium& g = s.geometrium();
+  std::vector<int> seen(fp.size());
+  std::size_t total = 0;
+  bool ok = true;
+  for (FaceId f : s.faces())
+    for (FacePoints::PointId i : fp.points(f))
+    {
+      ++total;
+      if (++seen[i] > 1 || point_in_triangle(fp.point(i), g.triangle(f)) == Intersect::Out) ok = false;
+    }
+  return ok && total == n;
+}
+
+static void test_face_points()
+{
+  Geometrium g;
+  Surface& s = g.new_surface();
+  unsigned x = 4321;
+  auto rnd = [&] { x = x * 1103515245u + 12345u; return double((x >> 8) & 0xffff) / 65536.; };
+  std::vector<Vec3> pts;
+  for (int i = 0; i < 2000; ++i) pts.push_back({ rnd(), rnd(), 0. });
+  const FaceId t = enclosing_triangle(g, pts, 10.);
+  s.add_face(t);
+  FacePoints fp(s);
+  for (const Vec3& p : pts) fp.add(p, t);
+  CHECK(fp.size() == 2000 && points_consistent(fp, s, 2000));
+
+  // Delaunay insertions of some of the points, as vertices.
+  std::size_t n = 2000;
+  std::vector<VertexId> vs;
+  auto insert = [&](FacePoints::PointId i) {
+    const FaceId f = locate(s, fp.point(i));
+    fp.remove(i);
+    --n;
+    vs.push_back(g.add_vertex(fp.point(i)));
+    delaunay_add_vertex_to_face(s, vs.back(), f);
+  };
+  for (FacePoints::PointId i = 0; i < 300; ++i) insert(i);
+  CHECK(points_consistent(fp, s, n));
+
+  // Removals of vertices, which add faces before removing the old ones, in
+  // turn with insertions and then alone, with no reads in between.
+  for (int k = 0; k < 100; ++k)
+  {
+    delaunay_remove_vertex(s, vs[k]);
+    insert(FacePoints::PointId(300 + k));
+  }
+  CHECK(points_consistent(fp, s, n));
+  for (int k = 100; k < 200; ++k) delaunay_remove_vertex(s, vs[k]);
+  CHECK(points_consistent(fp, s, n));
+
+  // Changes in place, by the core's primitives.
+  auto inner_edge = [&] {
+    for (FaceId f : s.faces())
+      for (EdgeId e : g.face(f).e)
+      {
+        int k = 0;
+        for (FaceId h : g.faces_of(e)) k += s.contains(h);
+        if (k == 2) return e;
+      }
+    return EdgeId();
+  };
+  tessellate(s, [](Geometrium& g, EdgeId e) { return g.add_vertex(midpoint(g, e)); });
+  CHECK(points_consistent(fp, s, n));
+  swap_edge(s, inner_edge());
+  CHECK(points_consistent(fp, s, n));
+  const EdgeId c = inner_edge();
+  g.collapse_edge(c, midpoint(g, c));
+  CHECK(points_consistent(fp, s, n));
+
+  // Renumbering, and faces that leave with no face to take their points.
+  g.collect();
+  CHECK(points_consistent(fp, s, n));
+  const std::size_t faces = s.face_number();
+  delaunay_remove_hull(s);
+  CHECK(s.face_number() < faces);
+  std::size_t left = 0;
+  for (FaceId f : s.faces()) left += count(fp.points(f));
+  CHECK(left < n && points_consistent(fp, s, left));
+}
+
+static void test_height_field()
+{
+  // A plane: the corners make it exactly, so nothing else is inserted.
+  {
+    Geometrium g;
+    Surface& s = g.new_surface();
+    const std::size_t w = 30, h = 20;
+    std::vector<double> z(w * h);
+    for (std::size_t j = 0; j < h; ++j)
+      for (std::size_t i = 0; i < w; ++i) z[j * w + i] = 2. * i + 3. * j + 1.;
+    approximate_grid(s, w, h, z, stop_below_cost(1e-9));
+    CHECK(s.vertex_number() == 4 && s.face_number() == 2);
+  }
+  // A terrain: stopping below a cost leaves every grid point within it.
+  {
+    Geometrium g;
+    Surface& s = g.new_surface();
+    const std::size_t w = 60, h = 40;
+    std::vector<double> z(w * h);
+    for (std::size_t j = 0; j < h; ++j)
+      for (std::size_t i = 0; i < w; ++i) z[j * w + i] = 10. * std::sin(0.2 * i) * std::cos(0.15 * j) + 0.1 * i;
+    approximate_grid(s, w, h, z, stop_below_cost(0.5));
+    CHECK(s.vertex_number() > 4 && s.vertex_number() < w * h / 4);
+    double worst = 0.;
+    for (std::size_t j = 0; j < h; ++j)
+      for (std::size_t i = 0; i < w; ++i)
+      {
+        const Vec3 p{ double(i), double(j), z[j * w + i] };
+        const FaceId f = locate(s, p);
+        if (f.valid()) worst = std::max(worst, std::abs(interpolate_height(g, f, p) - p.z));
+      }
+    CHECK(worst < 0.5 + 1e-9);
+    CHECK(is_orientable(s) && boundary(s).size() > 0);
+
+    Geometrium g2;
+    Surface& s2 = g2.new_surface();
+    approximate_grid(s2, w, h, z, stop_at_vertices(100));
+    CHECK(s2.vertex_number() == 100);
+    bool threw = false;
+    try { approximate_grid(s2, w, h, std::span(z).first(10), stop_at_vertices(100)); }
+    catch (const std::invalid_argument&) { threw = true; }
+    CHECK(threw);
+  }
+  // Scattered points, closed by a face on the enclosing triangle.
+  {
+    Geometrium g;
+    Surface& s = g.new_surface();
+    unsigned x = 777;
+    auto rnd = [&] { x = x * 1103515245u + 12345u; return double((x >> 8) & 0xffff) / 65536.; };
+    std::vector<Vec3> pts;
+    for (int i = 0; i < 500; ++i) { const double px = rnd(), py = rnd(); pts.push_back({ px, py, std::sin(5 * px) * py }); }
+    approximate_points(s, pts, stop_at_vertices(60), height_cost, Enclosing::Close);
+    CHECK(is_closed(s) && is_orientable(s) && s.vertex_number() == 59);
+    bool threw = false;
+    try { approximate_points(s, {}, stop_at_vertices(60)); }
+    catch (const std::invalid_argument&) { threw = true; }
+    CHECK(threw);
+  }
+}
+
 int main()
 {
   std::println("sizeof Vertex {}, Edge {}, Face {}", sizeof(Vertex), sizeof(Edge), sizeof(Face));
@@ -1634,6 +1847,9 @@ int main()
   test_graph();
   test_isoslice();
   test_iso_seeded();
+  test_face_events();
+  test_face_points();
+  test_height_field();
   std::println("{}", g_failed ? "FAILED" : "all passed");
   return g_failed != 0;
 }

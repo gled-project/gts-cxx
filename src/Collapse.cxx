@@ -219,7 +219,11 @@ bool Geometrium::collapse_folds(EdgeId e, Vec3 p, double max) const
 void Geometrium::destroy_face(FaceId f)
 {
   for (auto& s : m_surfaces)
-    if (s->m_faces.erase(f)) --m_faces[f.i].surfaces;
+    if (s->m_faces.erase(f))
+    {
+      --m_faces[f.i].surfaces;
+      call(s->m_face_callouts, FaceEvent{ f, false });
+    }
   kill_face(f);
 }
 

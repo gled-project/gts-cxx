@@ -179,6 +179,12 @@ None open.
 - `kl_refine()` moves nodes without keeping the boundary maps of the
   bisection, as GTS's `gts_graph_bisection_kl_refine` did, so `check()`
   fails after it; `bkl_refine()` keeps them.
+- The height-field approximation counts vertices from 4, as happrox did,
+  also for scattered points, whose enclosing triangle has 3:
+  `stop_at_vertices(n)` inserts n - 4 points.
+- A point of a height field with the x and y of a vertex of its face is not
+  inserted, as GTS's insertion refused it. Its face stays out of the heap
+  from then on, with its other points.
 - A Delaunay vertex added exactly on an edge of the face it lies in makes
   a flat face, which the swap test then removes, as in GTS; on the
   boundary of the triangulation, with no face to swap with, the flat face

@@ -305,35 +305,18 @@ FaceId locate(const Surface& s, Vec3 p, FaceId guess)
 
 namespace {
 
-// A triangulation being changed. Every face that enters or leaves s goes
-// through add() and remove(), which tell the refinement's heap, as GTS's
-// heap surface class did.
+// A triangulation being changed.
 struct Cdt
 {
   Surface&    s;
   Geometrium& g;
-  std::function<void(FaceId)> on_add, on_remove;
 
   explicit Cdt(Surface& s_) : s(s_), g(s_.geometrium()) {}
 
-  void add(FaceId f)
-  {
-    s.add_face(f);
-    if (on_add) on_add(f);
-  }
-  void remove(FaceId f)
-  {
-    if (on_remove) on_remove(f);
-    s.remove_face(f);
-  }
-  // gts_object_destroy on an edge: its faces leave s through remove().
-  void destroy(EdgeId e)
-  {
-    std::vector<FaceId> faces;
-    for (FaceId t : g.faces_of(e)) if (s.contains(t)) faces.push_back(t);
-    for (FaceId t : faces) if (on_remove) on_remove(t);
-    g.destroy(e);
-  }
+  void add(FaceId f)    { s.add_face(f); }
+  void remove(FaceId f) { s.remove_face(f); }
+  // gts_object_destroy on an edge.
+  void destroy(EdgeId e) { g.destroy(e); }
   // An edge from a to b, the existing one if there is.
   EdgeId edge(VertexId a, VertexId b)
   {
@@ -872,11 +855,12 @@ unsigned delaunay_refine(Surface& s, int steiner_max, const FaceCost& cost, cons
     if (key != 0.) handle_of(f) = heap.insert(f, key);
   };
   for (FaceId f : s.faces()) insert(f);
-  c.on_add = insert;
-  c.on_remove = [&](FaceId f) {
-    Heap::Handle& h = handle_of(f);
+  // Every face that enters or leaves s, as GTS's heap surface class.
+  const Subscription sub = s.on_face([&](const FaceEvent& ev) {
+    if (ev.added) { insert(ev.face); return; }
+    Heap::Handle& h = handle_of(ev.face);
     if (h != kNoHandle) { heap.remove(h); h = kNoHandle; }
-  };
+  });
 
   Encroached q;
   while (steiner_max-- != 0)

@@ -21,17 +21,20 @@ with `compare.py`: integers exactly, floating-point values to a relative
 tolerance (default 1e-9). It then reads every surface the C++ library wrote
 back through the C library, to check the writer.
 
-All 310 cases run through both libraries: the 240 of the port of what
+All 320 cases run through both libraries: the 240 of the port of what
 Gled calls, 21 for the distances, the inside test, curvature, merging and
 the centres, 46 for what was ported after: Delaunay triangulation, the
 iso-surface slices, triangle strips, progressive and hierarchical surfaces,
-and graphs, and 3 for marching cubes from a seed, which gts-cxx adds and
-which the C side runs as GTS's full marching cubes. The 21 print a line per vertex or sample point, keyed by its
-coordinates, and read surfaces the C library wrote (`@REF@` in
-`cases.txt`), so that both programs measure the same input. The summaries
-include whether the surface intersects itself. On 2026-10-13:
+and graphs; 3 for marching cubes from a seed, which gts-cxx adds and which
+the C side runs as GTS's full marching cubes; and 10 for height fields,
+which run GTS's example `happrox.c` in the C library. The 21 print a line
+per vertex or sample point, keyed by its coordinates, and read surfaces the
+C library wrote (`@REF@` in `cases.txt`), so that both programs measure the
+same input. The summaries include whether the surface intersects itself.
+How GTS breaks ties changes with the build of `gts-ref`, which moves cases
+between the categories below. On 2026-10-13:
 
-- 184 cases agree with the C library in every value to 1e-9, and so do
+- 192 cases agree with the C library in every value to 1e-9, and so do
   the surfaces written by the C++ library when read by the C one.
 - 20 are in `test/compare/fixed.txt`: gts-cxx fixes an error of GTS there,
   or departs from it on purpose (see `QUIRKS.md`), so the results differ,
@@ -40,21 +43,23 @@ include whether the surface intersects itself. On 2026-10-13:
   must be closed, manifold and orientable, also when the C library reads
   them back; those of the cartesian method, also from a seed, and of the
   slices may differ only in the sign of the volume, as their faces are
-  oriented the other way; in the curvature of the C library's bounded torus, only vertices
-  where gts-cxx gives no Gaussian curvature may differ; the hierarchical
-  surfaces, which crash GTS, and the graph and the progressive surface GTS
-  cannot read back must succeed.
-- 16 are in `test/compare/ties.txt`: GTS chooses between equal costs or
-  candidates in the order of its hash tables, which follows memory
-  addresses. `compare.sh` checks instead that the two surfaces lie within
-  a tenth of the mean edge length of each other, and `compare.py` that the
-  lines listed with the case agree: for strips and partitions, that every
-  face or node is taken once.
-- 1 is self-tied: a flat surface, whose self-intersection Simulation of
-  Simplicity decides; gts-cxx counts those ties (`self_sos_ties`).
-- 82 are degenerate booleans, and 7 crash in the C library: six
-  booleans, and the refinement of `crossing.gts`, which does not end
-  (see `QUIRKS.md`), where gts-cxx reports the error. See below.
+  oriented the other way; in the curvature of the C library's bounded
+  torus, only vertices where gts-cxx gives no Gaussian curvature may
+  differ; the hierarchical surfaces, which crash GTS, and the graph and the
+  progressive surface GTS cannot read back must succeed.
+- 19 are in `test/compare/ties.txt` and differ: GTS chooses between equal
+  costs or candidates in the order of its hash tables, which follows
+  memory addresses. `compare.sh` checks instead that the two surfaces lie
+  within a tenth of the mean edge length of each other, and `compare.py`
+  that the lines listed with the case agree: for strips and partitions,
+  that every face or node is taken once.
+- 85 are degenerate booleans, and 4 crash in the C library: three
+  booleans, and the refinement of `crossing.gts`, which does not end (see
+  `QUIRKS.md`), where gts-cxx reports the error. See below.
+
+A flat surface, whose self-intersection Simulation of Simplicity decides,
+is self-tied; gts-cxx counts those ties (`self_sos_ties`). Read back by the
+C library, `delaunay-two_segments-quality-0.5` is.
 
 82 boolean cases are degenerate: the two surfaces touch or have coplanar
 faces, and Simulation of Simplicity decides the exactly degenerate
@@ -62,11 +67,11 @@ orientation tests. GTS breaks those ties by memory address, so its own
 results change with the program's allocations; gts-cxx breaks them by
 vertex index. `compare.py` treats a boolean case with any such tie between
 the two surfaces as degenerate, and checks that the result of gts-cxx is
-closed, manifold and orientable. All 82 are.
+closed, manifold and orientable. All 85 are.
 
 The C library aborts in some degenerate boolean cases, and which ones
 depends on the build of `gts-ref`: three builds on 2026-10-09 aborted in
-15, 3 and 6 cases. `horse4 horse5` aborted in all three, and gts-cxx
+15, 3 and 6 cases, and the build of 2026-10-13 in 3. `horse4 horse5` aborted in all three, and gts-cxx
 reports an error there; so it does for `t19 t20`. Where `a23`, `a24` and
 `a25` abort, gts-cxx gives valid results. Of the cases where the C library
 reports an error, gts-cxx succeeds in 9, the touching cubes.

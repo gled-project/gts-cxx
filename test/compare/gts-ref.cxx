@@ -1017,6 +1017,305 @@ void graph_cmd(GtsSurface* s, std::span<char*> a)
     fail("graph: WHAT must be stats, bubble, bisect, recursive, pgraph or io");
 }
 
+//==============================================================================
+// Height fields, as GTS's example happrox.c
+//==============================================================================
+
+// Heights from a PGM file, P2 or P5, without comments, as pgm_readpgm:
+// z[j][i] at (i, j).
+std::vector<std::vector<double>> read_pgm(const char* path)
+{
+  FILE* fp = std::fopen(path, "rb");
+  if ( ! fp) fail(std::string("cannot open ") + path);
+  char magic[3] = {};
+  unsigned w, h, maxval;
+  if (std::fscanf(fp, "%2s %u %u %u", magic, &w, &h, &maxval) != 4 || (magic != std::string_view("P2") && magic != std::string_view("P5")))
+    fail("bad PGM header");
+  std::fgetc(fp);
+  std::vector<std::vector<double>> z(h, std::vector<double>(w));
+  for (auto& row : z)
+    for (double& v : row)
+    {
+      unsigned x = 0;
+      if (magic[1] == '2') { if (std::fscanf(fp, "%u", &x) != 1) fail("bad PGM data"); }
+      else if (maxval < 256) x = unsigned(std::fgetc(fp));
+      else { x = unsigned(std::fgetc(fp)) << 8; x |= unsigned(std::fgetc(fp)); }
+      v = x;
+    }
+  std::fclose(fp);
+  return z;
+}
+
+struct ListFace
+{
+  GtsListFace  parent;
+  GtsEHeap*    heap;
+  GtsEHeapPair* pair;
+  GtsVertex*   best;
+  GtsVector    p;
+};
+
+struct ListFaceClass
+{
+  GtsFaceClass parent_class;
+  void (*cost_init)(ListFace*);
+};
+
+ListFaceClass* list_face_class();
+ListFace* LIST_FACE(gpointer o) { return (ListFace*) o; }
+bool IS_LIST_FACE(gpointer o) { return gts_object_is_from_class(o, list_face_class()) != nullptr; }
+
+void list_face_destroy(GtsObject* object)
+{
+  ListFace* f = LIST_FACE(object);
+  if (f->heap)
+  {
+    gts_eheap_remove(f->heap, f->pair);
+    f->heap = nullptr;
+  }
+  (*GTS_OBJECT_CLASS(list_face_class())->parent_class->destroy)(object);
+}
+
+void triangle_plane(GtsTriangle* f, GtsVector p)
+{
+  GtsPoint* v1 = GTS_POINT(GTS_SEGMENT(f->e1)->v1);
+  GtsPoint* v2 = GTS_POINT(GTS_SEGMENT(f->e1)->v2);
+  GtsPoint* v3 = GTS_POINT(gts_triangle_vertex(f));
+  const gdouble x1 = v2->x - v1->x, y1 = v2->y - v1->y;
+  const gdouble x2 = v3->x - v1->x, y2 = v3->y - v1->y;
+  const gdouble det = x1*y2 - x2*y1;
+  g_assert(det != 0.);
+  p[0] = (y2*(v2->z - v1->z) - y1*(v3->z - v1->z))/det;
+  p[1] = (-x2*(v2->z - v1->z) + x1*(v3->z - v1->z))/det;
+  p[2] = ((- v1->x*y2 + v1->y*x2)*(v2->z - v1->z) + (- v1->y*x1 + v1->x*y1)*(v3->z - v1->z))/det + v1->z;
+}
+
+void list_face_cost_init(ListFace* f) { triangle_plane(GTS_TRIANGLE(f), f->p); }
+
+void list_face_class_init(ListFaceClass* klass)
+{
+  GTS_OBJECT_CLASS(klass)->destroy = list_face_destroy;
+  klass->cost_init = list_face_cost_init;
+}
+
+ListFaceClass* list_face_class()
+{
+  static ListFaceClass* klass = nullptr;
+  if ( ! klass)
+  {
+    GtsObjectClassInfo info = {
+      "ListFace", sizeof(ListFace), sizeof(ListFaceClass),
+      (GtsObjectClassInitFunc) list_face_class_init, (GtsObjectInitFunc) nullptr,
+      (GtsArgSetFunc) nullptr, (GtsArgGetFunc) nullptr
+    };
+    klass = (ListFaceClass*) gts_object_class_new(GTS_OBJECT_CLASS(gts_list_face_class()), &info);
+  }
+  return klass;
+}
+
+using HfCost = gdouble (*)(ListFace*, GtsPoint*, gpointer);
+
+gdouble height_cost(ListFace* f, GtsPoint* p, gpointer)
+{
+  return std::fabs(p->x*f->p[0] + p->y*f->p[1] + f->p[2] - p->z);
+}
+
+gdouble relative_height_cost(ListFace* f, GtsPoint* p, gpointer data)
+{
+  const gdouble z = *(gdouble*) data;
+  const gdouble dz = p->x*f->p[0] + p->y*f->p[1] + f->p[2] - p->z;
+  return std::fabs(p->z) < z ? std::fabs(dz/z) : std::fabs(dz/p->z);
+}
+
+gboolean hf_stop_number(gdouble, guint number, guint* max) { return number >= *max; }
+gboolean hf_stop_cost(gdouble cost, guint, gdouble* min) { return cost < *min; }
+
+void list_face_update(ListFace* f, gpointer* data)
+{
+  if ( ! IS_LIST_FACE(f)) return;
+  GSList* i = GTS_LIST_FACE(f)->points;
+  GtsEHeap* heap = (GtsEHeap*) data[0];
+  HfCost cost = (HfCost) data[1];
+  if ( ! i) return;
+  gdouble maxerr = 0.;
+  ((ListFaceClass*) GTS_OBJECT(f)->klass)->cost_init(f);
+  f->best = nullptr;
+  for (; i; i = i->next)
+  {
+    const gdouble e = cost(f, (GtsPoint*) i->data, data[2]);
+    if (e > maxerr) { maxerr = e; f->best = GTS_VERTEX(i->data); }
+  }
+  if (f->heap)
+  {
+    gts_eheap_remove(f->heap, f->pair);
+    f->heap = nullptr;
+  }
+  if (maxerr > 0.)
+  {
+    f->pair = gts_eheap_insert_with_key(heap, f, - maxerr);
+    f->heap = heap;
+  }
+}
+
+void list_face_clear_heap(ListFace* f) { f->heap = nullptr; }
+
+void surface_hf_refine(GtsSurface* s, HfCost cost, gpointer cost_data, GtsStopFunc stop, gpointer stop_data)
+{
+  GtsEHeap* heap = gts_eheap_new(nullptr, nullptr);
+  gpointer data[3] = { heap, (gpointer) cost, cost_data };
+  guint nv = 4;
+  gdouble top_cost;
+  GtsListFace* f;
+  gts_surface_foreach_face(s, (GtsFunc) list_face_update, data);
+  while ((f = (GtsListFace*) gts_eheap_remove_top(heap, &top_cost)) && ! stop(- top_cost, nv, stop_data))
+  {
+    GtsVertex* v = LIST_FACE(f)->best;
+    LIST_FACE(f)->heap = nullptr;
+    gts_delaunay_add_vertex_to_face(s, v, GTS_FACE(f));
+    GSList* t = gts_vertex_triangles(v, nullptr);
+    for (GSList* i = t; i; i = i->next) list_face_update(LIST_FACE(i->data), data);
+    g_slist_free(t);
+    nv++;
+  }
+  if (f) LIST_FACE(f)->heap = nullptr;
+  gts_eheap_foreach(heap, (GFunc) list_face_clear_heap, nullptr);
+  gts_eheap_destroy(heap);
+}
+
+void destroy_unused(GtsListFace* f)
+{
+  g_slist_foreach(f->points, (GFunc) gts_object_destroy, nullptr);
+  g_slist_free(f->points);
+  f->points = nullptr;
+}
+
+GtsSurface* hf_surface()
+{
+  return gts_surface_new(gts_surface_class(), GTS_FACE_CLASS(list_face_class()), gts_edge_class(), gts_vertex_class());
+}
+
+GtsSurface* happrox(const std::vector<std::vector<double>>& g, HfCost cost, gpointer cost_data,
+                    GtsStopFunc stop, gpointer stop_data)
+{
+  const gint height = gint(g.size()), width = gint(g[0].size());
+  GtsSurface* s = hf_surface();
+  GtsVertex* v1 = gts_vertex_new(s->vertex_class, 0., 0., g[0][0]);
+  GtsVertex* v2 = gts_vertex_new(s->vertex_class, 0., height - 1, g[height - 1][0]);
+  GtsVertex* v3 = gts_vertex_new(s->vertex_class, width - 1, 0., g[0][width - 1]);
+  GtsVertex* v4 = gts_vertex_new(s->vertex_class, width - 1, height - 1, g[height - 1][width - 1]);
+  GSList* corners = nullptr;
+  corners = g_slist_prepend(corners, v1);
+  corners = g_slist_prepend(corners, v2);
+  corners = g_slist_prepend(corners, v3);
+  corners = g_slist_prepend(corners, v4);
+  GtsTriangle* t = gts_triangle_enclosing(gts_triangle_class(), corners, 100.);
+  g_slist_free(corners);
+  GtsVertex *w1, *w2, *w3;
+  gts_triangle_vertices(t, &w1, &w2, &w3);
+  GtsListFace* f = GTS_LIST_FACE(gts_face_new(s->face_class, t->e1, t->e2, t->e3));
+  gts_surface_add_face(s, GTS_FACE(f));
+
+  auto prepend = [&](gint i, gint j) {
+    f->points = g_slist_prepend(f->points, gts_vertex_new(gts_vertex_class(), i, j, g[j][i]));
+  };
+  for (gint i = 1; i < width - 1; i++)
+  {
+    for (gint j = 1; j < height - 1; j++) prepend(i, j);
+    prepend(i, 0);
+    prepend(i, height - 1);
+  }
+  for (gint j = 1; j < height - 1; j++)
+  {
+    prepend(0, j);
+    prepend(width - 1, j);
+  }
+
+  for (GtsVertex* v : { v1, v2, v3, v4 })
+  {
+    if (v != v1) f = GTS_LIST_FACE(gts_point_locate(GTS_POINT(v), s, nullptr));
+    if (gts_delaunay_add_vertex_to_face(s, v, GTS_FACE(f)) != nullptr) fail("happrox: a corner could not be inserted");
+  }
+
+  surface_hf_refine(s, cost, cost_data, stop, stop_data);
+  gts_surface_foreach_face(s, (GtsFunc) destroy_unused, nullptr);
+  gts_allow_floating_vertices = TRUE;
+  gts_object_destroy(GTS_OBJECT(w1));
+  gts_object_destroy(GTS_OBJECT(w2));
+  gts_object_destroy(GTS_OBJECT(w3));
+  gts_allow_floating_vertices = FALSE;
+  return s;
+}
+
+GtsSurface* happrox_list(GSList* points, bool keep_enclosing, bool closed, HfCost cost, gpointer cost_data,
+                         GtsStopFunc stop, gpointer stop_data)
+{
+  GtsSurface* s = hf_surface();
+  GtsTriangle* t = gts_triangle_enclosing(gts_triangle_class(), points, 10.);
+  GtsVertex *w1, *w2, *w3;
+  gts_triangle_vertices(t, &w1, &w2, &w3);
+  GTS_POINT(w1)->z = GTS_POINT(w2)->z = GTS_POINT(w3)->z = keep_enclosing ? -10. : -1e30;
+  GtsListFace* f = GTS_LIST_FACE(gts_face_new(s->face_class, t->e1, t->e2, t->e3));
+  gts_surface_add_face(s, GTS_FACE(f));
+  f->points = points;
+
+  surface_hf_refine(s, cost, cost_data, stop, stop_data);
+  gts_surface_foreach_face(s, (GtsFunc) destroy_unused, nullptr);
+  if ( ! keep_enclosing)
+  {
+    gts_allow_floating_vertices = TRUE;
+    gts_object_destroy(GTS_OBJECT(w1));
+    gts_object_destroy(GTS_OBJECT(w2));
+    gts_object_destroy(GTS_OBJECT(w3));
+    gts_allow_floating_vertices = FALSE;
+  }
+  else if (closed)
+  {
+    GSList* l = gts_surface_boundary(s);
+    if (g_slist_length(l) != 3) fail("happrox: the boundary is not the enclosing triangle");
+    GtsFace* nf = gts_face_new(s->face_class, GTS_EDGE(l->data), GTS_EDGE(l->next->data), GTS_EDGE(l->next->next->data));
+    gts_surface_add_face(s, nf);
+    if ( ! gts_face_is_compatible(nf, s)) gts_triangle_revert(GTS_TRIANGLE(nf));
+    g_slist_free(l);
+    gts_object_destroy(GTS_OBJECT(t));
+  }
+  else
+    gts_object_destroy(GTS_OBJECT(t));
+  return s;
+}
+
+// happrox IN number=N|cost=C [relative=Z] [keep|closed]: IN is a PGM file,
+// or, ending in .xyz, lines of x y z, as happrox -f reads them.
+GtsSurface* happrox_cmd(const char* path, std::span<char*> a)
+{
+  guint number = 0;
+  gdouble cmin = 0., relative = 0.;
+  bool by_cost = false, keep = false, closed = false;
+  for (std::string_view x : a)
+  {
+    if      (x.starts_with("number="))   number = guint(std::atoi(x.data() + 7));
+    else if (x.starts_with("cost="))     { by_cost = true; cmin = std::atof(x.data() + 5); }
+    else if (x.starts_with("relative=")) relative = std::atof(x.data() + 9);
+    else if (x == "keep")   keep = true;
+    else if (x == "closed") keep = closed = true;
+    else fail(std::string("unknown happrox option ") + std::string(x));
+  }
+  const HfCost cost = relative > 0. ? relative_height_cost : height_cost;
+  const GtsStopFunc stop = by_cost ? (GtsStopFunc) hf_stop_cost : (GtsStopFunc) hf_stop_number;
+  gpointer stop_data = by_cost ? (gpointer) &cmin : (gpointer) &number;
+  if (std::string_view(path).ends_with(".xyz"))
+  {
+    FILE* fp = std::fopen(path, "r");
+    if ( ! fp) fail(std::string("cannot open ") + path);
+    GSList* points = nullptr;
+    double x, y, z;
+    while (std::fscanf(fp, "%lf %lf %lf", &x, &y, &z) == 3)
+      points = g_slist_prepend(points, gts_vertex_new(gts_vertex_class(), x, y, z));
+    std::fclose(fp);
+    return happrox_list(points, keep, closed, cost, &relative, stop, stop_data);
+  }
+  return happrox(read_pgm(path), cost, &relative, stop, stop_data);
+}
+
 void usage()
 {
   std::print(stderr,
@@ -1029,6 +1328,8 @@ void usage()
     "  tessellate IN ORDER [mid]\n"
     "  sphere     ORDER\n"
     "  iso        ALGO FUNC N\n"
+    "               ALGO: cartesian | seeded | tetra | tetra_bounded | tetra_bcl\n"
+    "               FUNC: sphere | torus | blobs, on [-1.25, 1.25]^3 with N cells per axis\n"
     "  isoslice   FUNC N           marching cubes on a warped grid, through the slice API\n"
     "  strip      IN               triangle strips\n"
     "  psurface   IN MIN_EDGES LEVEL...    progressive surface at levels, then at the finest\n"
@@ -1037,8 +1338,6 @@ void usage()
     "  hsurface   IN MIN_EDGES N           hierarchical surface: N expansions, N/2 collapses\n"
     "  graph      IN stats|bubble NP NITER|bisect ggg|bfgg NTRY [kl|bkl MMAX]|recursive N|pgraph MIN|io\n"
     "  jostle     GRAPH N          a graph in the Jostle format, in 2^N parts\n"
-    "               ALGO: cartesian | seeded | tetra | tetra_bounded | tetra_bcl\n"
-    "               FUNC: sphere | torus | blobs, on [-1.25, 1.25]^3 with N cells per axis\n"
     "  bool       OP A B           OP: union | inter | diff\n"
     "  cluster    IN DELTA\n"
     "  distance   A B [DELTA]      distance from A to B and from B to A\n"
@@ -1046,7 +1345,8 @@ void usage()
     "  inside     IN N             inside, distance and closest point on an N^3 grid\n"
     "  merge      IN EPS           faces on vertices of their own, merged back\n"
     "  centers    IN               centres of mass and area, boundary\n"
-    "  delaunay   IN [noconst] [nohull] [holes] [hullconst] [conform] [steiner=N] [quality=Q] [area=A]\n");
+    "  delaunay   IN [noconst] [nohull] [holes] [hullconst] [conform] [steiner=N] [quality=Q] [area=A]\n"
+    "  happrox    IN number=N|cost=C [relative=Z] [keep|closed]   IN: .pgm, or .xyz as happrox -f\n");
   std::exit(2);
 }
 
@@ -1218,6 +1518,10 @@ int main(int argc, char* argv[])
   else if (cmd == "delaunay" && a.size() >= 1)
   {
     s = delaunay_cmd(a[0], parse_delaunay(a.subspan(1)));
+  }
+  else if (cmd == "happrox" && a.size() >= 2)
+  {
+    s = happrox_cmd(a[0], a.subspan(1));
   }
   else
   {

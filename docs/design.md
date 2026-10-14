@@ -47,6 +47,18 @@
   code assigned the ends of a segment.
 - Flags below `kUserFlag` are the library's: `kDead`, `kConstraint` for the
   edges a Delaunay triangulation keeps, and `kParked`.
+- A surface reports each face that enters or leaves it, by any route, to
+  its `on_face()` subscribers. Delaunay refinement keeps its heap of faces
+  with it, as GTS's heap surface class did. When nobody subscribes, the
+  cost is one test per face entering or leaving: 0.1% to 1.8% more
+  instructions in tessellation, coarsening, marching cubes and Delaunay
+  insertion, and no change in time beyond the noise.
+- `FacePoints` keeps points in lists by the faces that hold them, as
+  `GtsListFace`, outside the Geometrium. It follows the face events and the
+  splits and collapses. Within a callout it only divides the points of the
+  faces that left among the faces that came; a point that none of those
+  holds is located when the points are next read, as the surface may be
+  half changed during a callout.
 - Graphs are separate from Geometria: a `Graph` owns nodes and edges with
   float weights and an index for the user, such as the face of a node of a
   surface's dual graph, and a `NodeSet` is a set of its nodes, as a

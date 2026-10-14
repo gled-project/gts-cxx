@@ -157,3 +157,17 @@ graph-horse5-recursive-3            graph @DATA@/gts-boolean/horse5.gts recursiv
 graph-sphere4-recursive-2           graph @REF@/sphere-4.gts recursive 2
 graph-horse5-pgraph-100             graph @DATA@/gts-boolean/horse5.gts pgraph 100
 graph-horse5-io                     graph @DATA@/gts-boolean/horse5.gts io
+
+# Height fields, as GTS's example happrox.c: a grid of heights from a PGM
+# file, or scattered points (.xyz, as happrox -f), approximated by greedy
+# insertion. The inputs are in test/data/happrox.
+happrox-terrain-300                 happrox @DATA@/happrox/terrain-120x90.pgm number=300
+happrox-terrain-3000                happrox @DATA@/happrox/terrain-120x90.pgm number=3000
+happrox-terrain-cost-200            happrox @DATA@/happrox/terrain-120x90.pgm cost=200
+happrox-terrain-relative            happrox @DATA@/happrox/terrain-120x90.pgm number=500 relative=5000
+happrox-terrain8-200                happrox @DATA@/happrox/terrain8-64x48.pgm number=200
+happrox-terrain8-cost-2             happrox @DATA@/happrox/terrain8-64x48.pgm cost=2
+happrox-points-300                  happrox @DATA@/happrox/points-2000.xyz number=300
+happrox-points-keep-300             happrox @DATA@/happrox/points-2000.xyz number=300 keep
+happrox-points-closed-cost-0.02     happrox @DATA@/happrox/points-2000.xyz cost=0.02 closed
+happrox-points-relative             happrox @DATA@/happrox/points-2000.xyz number=400 relative=0.5

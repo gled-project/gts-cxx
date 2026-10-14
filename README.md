@@ -18,8 +18,10 @@ surface, discrete curvature, the kd-tree, the merging of vertices and edges,
 and the removal of duplicate faces; the neighbourhoods of vertices, edges
 and faces, connected components, contact vertices and edges; constrained
 Delaunay triangulation in the plane with conforming and refinement;
-triangle strips; 4 x 4 matrices; progressive and hierarchical surfaces; and
-graphs with their partitions. [Gled](https://github.com/gled-project/gled)
+triangle strips; 4 x 4 matrices; progressive and hierarchical surfaces;
+graphs with their partitions; and, from GTS's example `happrox.c`, the
+approximation of height fields by greedy insertion, with the points that
+faces keep (`GtsListFace`). [Gled](https://github.com/gled-project/gled)
 uses it through GledGTS.
 
 The port keeps GTS's algorithms and its floating-point arithmetic, so that
@@ -68,10 +70,9 @@ instead (`GtsVertexNormal`, `GtsColorVertex`, the named objects of
 `named.c`); containers (`container.c`), the generic heap (`heap.c`) and the
 queue (`fifo.c`); the `GtsFile` tokenizer, of which `io` keeps what it
 reads; and the vector and point helpers, which `Vec3` and `BBox` cover.
-Not ported either: `GtsListFace`, the faces that carry lists of points
-through Delaunay insertions for GTS's example `happrox.c`; reading a
-progressive surface one split at a time, for streaming (`PSurface::read()`
-reads it all); and GtsEHeap's randomized mode.
+Not ported either: reading a progressive surface one split at a time,
+for streaming (`PSurface::read()` reads it all), and GtsEHeap's randomized
+mode.
 
 ## Layout
 
@@ -99,6 +100,8 @@ include/gts/
   Curvature.h            discrete mean and Gaussian curvature, principal directions
   KdTree.h               the kd-tree of vertices, for merging them
   Delaunay.h             constrained Delaunay triangulation, conforming, refinement
+  FacePoints.h           points kept by the faces that hold them, as GtsListFace
+  HeightField.h          height fields approximated by greedy insertion (happrox)
   Strip.h                triangle strips
   Matrix.h               4 x 4 matrices and transformations
   Graph.h                graphs, progressive graphs, partitions

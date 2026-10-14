@@ -15,7 +15,8 @@
 // split_edge() and split_face4() are the primitives of refinement and
 // tessellation, collapse_edge() that of coarsening. They set the attributes
 // of what they make with the hooks, and report to the on_split() and
-// on_collapse() subscribers.
+// on_collapse() subscribers. Surfaces report each face that enters or
+// leaves them to their on_face() subscribers.
 //
 // Copyright (C) 1999 Stéphane Popinet (GTS: triangle.c, edge.c, segment.c, vertex.c)
 // Copyright (C) 2026 Matevz Tadel
@@ -45,6 +46,52 @@ namespace gts {
 class Geometrium;
 
 //==============================================================================
+// Subscriptions
+//==============================================================================
+
+namespace detail {
+template <class F>
+struct CalloutRegistry
+{
+  std::uint64_t next_id = 0;
+  std::vector<std::pair<std::uint64_t, F>> callouts;
+};
+} // namespace detail
+
+// Keeps a callout registered; cancels it when destroyed or reset. May
+// outlive its Geometrium.
+class Subscription
+{
+public:
+  Subscription() = default;
+  Subscription(Subscription&& o) noexcept : m_cancel(std::exchange(o.m_cancel, nullptr)) {}
+  Subscription& operator=(Subscription&& o) noexcept { reset(); m_cancel = std::exchange(o.m_cancel, nullptr); return *this; }
+  ~Subscription() { reset(); }
+  void reset() { if (auto c = std::exchange(m_cancel, nullptr)) c(); }
+
+private:
+  friend class Geometrium;
+  friend class Surface;
+  explicit Subscription(std::function<void()> cancel) : m_cancel(std::move(cancel)) {}
+
+  std::function<void()> m_cancel;
+};
+
+//==============================================================================
+// Face events
+//==============================================================================
+
+// A face that has entered (added) or left a surface. A face that leaves is
+// still linked during the call; it may be unlinked after.
+struct FaceEvent
+{
+  FaceId face;
+  bool   added;
+};
+
+using FaceCallout = std::function<void(const FaceEvent&)>;
+
+//==============================================================================
 // Surface
 //==============================================================================
 
@@ -66,6 +113,11 @@ public:
   void add_face(FaceId f);
   void remove_face(FaceId f);
   bool contains(FaceId f) const { return m_faces.contains(f); }
+  // Registers a function called after each face that enters or leaves s,
+  // by any route: add_face(), remove_face(), the splits and collapses, and
+  // Geometrium::destroy(). A split's parent stays and changes in place, as
+  // on_split() reports. The callout must not change the Geometrium.
+  [[nodiscard]] Subscription on_face(FaceCallout f);
   // gts_surface_merge: adds the faces of with, which must be a surface of
   // the same Geometrium.
   void merge(const Surface& with);
@@ -90,6 +142,8 @@ private:
   Geometrium*           m_geo;
   std::string           m_name;
   std::flat_set<FaceId> m_faces;
+  std::shared_ptr<detail::CalloutRegistry<FaceCallout>> m_face_callouts =
+    std::make_shared<detail::CalloutRegistry<FaceCallout>>();
 };
 
 //==============================================================================
@@ -175,37 +229,6 @@ struct CollapseEvent
 };
 
 using CollapseCallout = std::function<void(const CollapseEvent&)>;
-
-//==============================================================================
-// Subscriptions
-//==============================================================================
-
-namespace detail {
-template <class F>
-struct CalloutRegistry
-{
-  std::uint64_t next_id = 0;
-  std::vector<std::pair<std::uint64_t, F>> callouts;
-};
-} // namespace detail
-
-// Keeps a callout registered; cancels it when destroyed or reset. May
-// outlive its Geometrium.
-class Subscription
-{
-public:
-  Subscription() = default;
-  Subscription(Subscription&& o) noexcept : m_cancel(std::exchange(o.m_cancel, nullptr)) {}
-  Subscription& operator=(Subscription&& o) noexcept { reset(); m_cancel = std::exchange(o.m_cancel, nullptr); return *this; }
-  ~Subscription() { reset(); }
-  void reset() { if (auto c = std::exchange(m_cancel, nullptr)) c(); }
-
-private:
-  friend class Geometrium;
-  explicit Subscription(std::function<void()> cancel) : m_cancel(std::move(cancel)) {}
-
-  std::function<void()> m_cancel;
-};
 
 //==============================================================================
 // Rings

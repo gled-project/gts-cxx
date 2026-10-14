@@ -33,6 +33,7 @@ void Surface::add_face(FaceId f)
     if (F.surfaces == UINT16_MAX)
       throw std::length_error("gts::Surface::add_face: face is in too many surfaces");
     ++F.surfaces;
+    Geometrium::call(m_face_callouts, FaceEvent{ f, true });
   }
 }
 
@@ -40,10 +41,17 @@ void Surface::remove_face(FaceId f)
 {
   if (m_faces.erase(f))
   {
-    Face& F = m_geo->m_faces[f.i];
-    if (--F.surfaces == 0 && ! (F.flags & kDead))
+    --m_geo->m_faces[f.i].surfaces;
+    Geometrium::call(m_face_callouts, FaceEvent{ f, false });
+    const Face& F = m_geo->m_faces[f.i];
+    if (F.surfaces == 0 && ! (F.flags & kDead))
       m_geo->release_face(f);
   }
+}
+
+Subscription Surface::on_face(FaceCallout f)
+{
+  return Geometrium::subscribe(m_face_callouts, std::move(f));
 }
 
 std::generator<EdgeId> Surface::edges() const

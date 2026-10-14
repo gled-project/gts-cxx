@@ -559,6 +559,64 @@ Surface& delaunay_cmd(Geometrium& g, const char* path, std::span<char*> a)
   return s;
 }
 
+//==============================================================================
+// Height fields, as gts-ref
+//==============================================================================
+
+// Heights from a PGM file, P2 or P5, without comments; row j at y = j.
+std::vector<double> read_pgm(const char* path, std::size_t& w, std::size_t& h)
+{
+  std::ifstream in(path, std::ios::binary);
+  std::string magic;
+  unsigned maxval;
+  if ( ! (in >> magic >> w >> h >> maxval) || (magic != "P2" && magic != "P5")) fail("bad PGM header");
+  in.get();
+  std::vector<double> z(w * h);
+  for (double& v : z)
+  {
+    unsigned x = 0;
+    if (magic == "P2") { if ( ! (in >> x)) fail("bad PGM data"); }
+    else if (maxval < 256) x = unsigned(in.get());
+    else { x = unsigned(in.get()) << 8; x |= unsigned(in.get()); }
+    v = x;
+  }
+  return z;
+}
+
+// happrox IN number=N|cost=C [relative=Z] [keep|closed]
+void happrox_cmd(Surface& s, const char* path, std::span<char*> a)
+{
+  std::size_t number = 0;
+  double cmin = 0., relative = 0.;
+  bool by_cost = false;
+  Enclosing enclosing = Enclosing::Remove;
+  for (std::string_view x : a)
+  {
+    if      (x.starts_with("number="))   number = std::size_t(std::atoi(x.data() + 7));
+    else if (x.starts_with("cost="))     { by_cost = true; cmin = std::atof(x.data() + 5); }
+    else if (x.starts_with("relative=")) relative = std::atof(x.data() + 9);
+    else if (x == "keep")   enclosing = Enclosing::Keep;
+    else if (x == "closed") enclosing = Enclosing::Close;
+    else fail(std::string("unknown happrox option ") + std::string(x));
+  }
+  const HeightCost cost = relative > 0. ? relative_height_cost(relative) : HeightCost(height_cost);
+  const HeightStop stop = by_cost ? stop_below_cost(cmin) : stop_at_vertices(number);
+  if (std::string_view(path).ends_with(".xyz"))
+  {
+    std::ifstream in(path);
+    std::vector<Vec3> points;
+    double x, y, z;
+    while (in >> x >> y >> z) points.push_back({ x, y, z });
+    // happrox -f prepends each point to its list.
+    std::ranges::reverse(points);
+    approximate_points(s, points, stop, cost, enclosing);
+    return;
+  }
+  std::size_t w, h;
+  const std::vector<double> z = read_pgm(path, w, h);
+  approximate_grid(s, w, h, z, stop, cost);
+}
+
 // As gts-ref's strip_chain.
 bool strip_chain(const std::vector<std::array<VertexId, 3>>& f)
 {
@@ -931,6 +989,12 @@ int main(int argc, char* argv[])
   else if (cmd == "delaunay" && a.size() >= 1)
   {
     try { s = &delaunay_cmd(g, a[0], a.subspan(1)); }
+    catch (const std::exception& e) { fail(e.what()); }
+  }
+  else if (cmd == "happrox" && a.size() >= 2)
+  {
+    s = &g.new_surface();
+    try { happrox_cmd(*s, a[0], a.subspan(1)); }
     catch (const std::exception& e) { fail(e.what()); }
   }
   else
